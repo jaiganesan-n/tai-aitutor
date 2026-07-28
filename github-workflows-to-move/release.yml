@@ -1,0 +1,49 @@
+# Publishes to PyPI on version tags (v0.2.0, v1.0.0, ...) via PyPI Trusted Publishing.
+#
+# One-time setup (no API tokens stored anywhere):
+#   1. On pypi.org → your project (or "pending publisher" before first release) →
+#      Publishing → add GitHub publisher:
+#        owner: towardsai   repo: tai-aitutor   workflow: release.yml   environment: pypi
+#   2. In the GitHub repo → Settings → Environments → create "pypi"
+#      (optionally add required reviewers for a manual approval gate).
+#
+# Release flow:
+#   bump __version__ in src/tai_aitutor/__init__.py + CHANGELOG.md
+#   git tag v0.2.0 && git push --tags
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build sdist + wheel
+        run: pipx run build
+      - name: Check metadata
+        run: pipx run twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # Trusted Publishing (OIDC) — no PyPI token needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

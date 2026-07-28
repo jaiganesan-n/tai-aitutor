@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tai-aitutor"
+dynamic = ["version"]
+description = "Towards AI course toolkit: plain-Python RAG building blocks (LLMs, embeddings, chunking, retrieval, evals) from the Full Stack AI Engineer course."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Towards AI" }]
+keywords = ["rag", "llm", "embeddings", "retrieval", "evaluation", "course", "towardsai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "tiktoken>=0.7",
+    "tqdm>=4.66",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=1.35"]
+openai = ["openai>=2,<3"]
+anthropic = ["anthropic>=0.40"]
+providers = ["tai-aitutor[gemini,openai,anthropic]"]
+rag = ["chromadb>=1.0.21"]
+rerank = ["cohere>=5.18"]
+local = ["sentence-transformers>=3.0"]
+finetune = ["sentence-transformers>=3.0", "datasets>=2.19", "accelerate>=0.30"]
+parse = ["pypdf>=4.2"]
+web = ["tavily-python>=0.5", "wikipedia>=1.4"]
+data = ["huggingface-hub>=0.23", "pandas>=2.0"]
+all = [
+    "tai-aitutor[providers,rag,rerank,local,finetune,parse,web,data]",
+]
+
+[project.urls]
+Homepage = "https://github.com/towardsai/tai-aitutor"
+Repository = "https://github.com/towardsai/tai-aitutor"
+Changelog = "https://github.com/towardsai/tai-aitutor/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/tai_aitutor/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tai_aitutor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501"]
