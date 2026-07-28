@@ -143,12 +143,19 @@ def embed_cohere(
     task: str = "document",
     *,
     model: str = "embed-v4.0",
+    output_dimension: int | None = 1536,
     api_key: str | None = None,
 ) -> list[Vector] | Vector:
     """Cohere embeddings via ``ClientV2.embed`` — the production embedder.
 
     Teaches the ``input_type`` asymmetry explicitly: ``search_document`` at
     index time, ``search_query`` at search time (exactly as production does).
+
+    ``embed-v4.0`` is Matryoshka-trained (256/512/1024/1536); the course
+    standardises on **1536** so vectors stay comparable across notebooks and
+    storage cost stays predictable — hence the explicit default. Pass a smaller
+    ``output_dimension`` for the storage-vs-quality experiment, or ``None`` to
+    take whatever the API's default is.
     """
     _check_task(task)
     single = isinstance(texts, str)
@@ -159,11 +166,15 @@ def embed_cohere(
     for batch in _batched(items, _MAX_BATCH["cohere"]):
 
         def call(b=batch):
+            kwargs: dict = {}
+            if output_dimension is not None:
+                kwargs["output_dimension"] = output_dimension
             resp = client.embed(
                 texts=b,
                 model=model,
                 input_type=_COHERE_TASKS[task],
                 embedding_types=["float"],
+                **kwargs,
             )
             floats = getattr(resp.embeddings, "float_", None)
             if floats is None:  # SDK versions differ on the alias
@@ -185,6 +196,30 @@ def _client_cohere(api_key: str | None = None):
     return cohere.ClientV2(api_key=key) if key else cohere.ClientV2()
 
 
+#: Known instruction-tuned retrieval models → the query instruction they expect.
+#: Matched by substring against the lowercased model name; extend as lessons add models.
+#: (e5's "query:"/"passage:" prefixes are handled separately below.)
+_KNOWN_QUERY_PROMPTS: dict[str, str] = {
+    "qwen3-embedding": (
+        "Instruct: Given a web search query, retrieve relevant passages that answer "
+        "the query\nQuery: "
+    ),
+    "gte-qwen": (
+        "Instruct: Given a web search query, retrieve relevant passages that answer "
+        "the query\nQuery: "
+    ),
+    "linq-embed": "Instruct: Given a question, retrieve passages that answer the question\nQuery: ",
+}
+
+
+def _default_query_prompt(model_name: str) -> str | None:
+    lowered = model_name.lower()
+    for marker, prompt in _KNOWN_QUERY_PROMPTS.items():
+        if marker in lowered:
+            return prompt
+    return None
+
+
 def embed_local(
     texts,
     *,
@@ -192,13 +227,20 @@ def embed_local(
     task: str = "document",
     batch_size: int = 32,
     normalize: bool = True,
+    query_prompt: str | None = None,
 ) -> list[Vector] | Vector:
     """Local embeddings with sentence-transformers (free, offline once downloaded).
 
-    Handles the e5 model family's required prefixes (``"query: "`` /
-    ``"passage: "``) automatically — forgetting them silently degrades e5
-    retrieval quality, which is exactly the kind of invisible failure the
-    course teaches you to look for.
+    Prefix handling — the invisible failure the embedding lesson warns about,
+    handled instead of skipped:
+
+    - e5 family: the required ``"query: "`` / ``"passage: "`` prefixes are
+      applied automatically.
+    - Instruction-tuned retrievers (Qwen3-Embedding, gte-Qwen, Linq-Embed…):
+      a query instruction is applied automatically for known models
+      (``_KNOWN_QUERY_PROMPTS``), and ``query_prompt=`` sets it explicitly for
+      anything else. Documents are embedded plain, queries get the instruction
+      — skipping it silently costs retrieval accuracy.
     """
     _check_task(task)
     single = isinstance(texts, str)
@@ -207,6 +249,10 @@ def embed_local(
     if "e5" in model_name.lower():
         prefix = "query: " if task == "query" else "passage: "
         items = [prefix + t for t in items]
+    elif task == "query":
+        instruction = query_prompt if query_prompt is not None else _default_query_prompt(model_name)
+        if instruction:
+            items = [instruction + t for t in items]
 
     model = _get_local_model(model_name)
     vectors = model.encode(

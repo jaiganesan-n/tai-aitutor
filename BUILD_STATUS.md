@@ -1,6 +1,14 @@
 # tai-aitutor — Build Status
 
-*The living tracker for the package build. Full design + LlamaIndex inventory: [`docs/PACKAGE_PLAN.md`](docs/PACKAGE_PLAN.md). Updated: **2026-07-28 (v1.0.0 — build complete)**.*
+*The living tracker for the package build. Full design + LlamaIndex inventory: [`docs/PACKAGE_PLAN.md`](docs/PACKAGE_PLAN.md). Updated: **2026-07-28 (v1.1.0 — build complete + field-test fixes)**.*
+
+**v1.1.0** shipped all 13 findings from the notebook-port field test: Colab-compatible
+`>=3.12` floor (verified on 3.12.3), the `mini_articles` source/id fixes,
+`ai_tutor_knowledge` doc_id + name→title, course-standard model defaults and prices
+(dated), the Together base-URL fix, and the new ablation helpers (`sweep_top_k`,
+`avg_context_tokens`/`context_tokens`, `show_eval_table(extra_columns=)`,
+`embed_cohere(output_dimension=1536)`, `embed_local(query_prompt=)` + known-model map).
+164 tests, run on BOTH 3.12 and 3.13.
 
 ## Why this package exists (one paragraph)
 
@@ -50,8 +58,10 @@ concept inline first; later notebooks import it from here.** The package is neve
   `text-embedding-3-small`), Anthropic (`claude-sonnet-4-6`, embeddings via Gemini or OpenAI),
   plus OpenAI-compatible Together / DeepSeek / Perplexity / Ollama via `base_url`.
 - Model names + prices live in ONE table (`config.py`), dated, verified each course release.
-- **Python: >=3.13** (decided 2026-07-28). CI matrix: 3.13, 3.14, and 3.15-dev
-  (non-blocking until 3.15 final ships ~Oct 2026); wheels build on 3.13.
+- **Python: >=3.12** (v1.1.0; the earlier 3.13 floor broke Colab installs — Colab's
+  2026.04 runtime is 3.12.13, and PEP 695 generics landed in 3.12). CI matrix: 3.12,
+  3.13, 3.14, and 3.15-dev (non-blocking); wheels build on 3.12. Do not raise the floor
+  without checking Colab's runtime first.
 - Notebooks pin exact versions. Dev installs use git tags; PyPI from launch (Trusted Publishing
   is set up in `.github/workflows/release.yml` — see its header comment for the one-time setup).
 - `.github/workflows/` note: the CI files are also mirrored in `github-workflows-to-move/`

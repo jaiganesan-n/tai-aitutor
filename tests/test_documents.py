@@ -105,6 +105,32 @@ def test_load_directory_pdf(tmp_path):
     assert docs == []
 
 
+def test_load_csv_id_col_readable_and_unique(tmp_path):
+    path = tmp_path / "articles.csv"
+    long_title = "An Extremely Long Article Title That Goes Way Past Forty Characters"
+    path.write_text(
+        "title,content\n"
+        f'"{long_title}","text a"\n'
+        '"Same Title","text b"\n'
+        '"Same Title","text c"\n'
+    )
+    docs = tai.load_csv(path, text_col="content", id_col="title")
+    assert docs[0].id == long_title[:40]          # course convention: title[:40]
+    assert docs[1].id == "Same Title"
+    assert docs[2].id == "Same Title~2"           # duplicates never collide
+    # chunk ids inherit the readable id
+    chunks = tai.chunk_document(docs[1], chunk_size=512, chunk_overlap=64)
+    assert chunks[0].id == "Same Title-0000"
+
+
+def test_load_csv_missing_id_col_raises(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text("content\nhello\n")
+    with pytest.raises(TaiAitutorError) as err:
+        tai.load_csv(path, text_col="content", id_col="title")
+    assert "id_col" in str(err.value)
+
+
 def test_document_stable_id():
     d1 = tai.Document(text="same text")
     d2 = tai.Document(text="same text")

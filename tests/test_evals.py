@@ -183,6 +183,45 @@ def test_evaluate_retrieval_needs_source():
         tai.evaluate_retrieval(make_qa())
 
 
+def test_sweep_top_k_one_retrieval_scores_every_k():
+    calls = []
+
+    def counting_fn(query, top_k):
+        calls.append((query, top_k))
+        return fake_search_fn(query, top_k)
+
+    reports = tai.sweep_top_k(make_qa(), [2, 5], search_fn=counting_fn)
+    # one retrieval per question, at max(k) — not one per (question, k)
+    assert len(calls) == 3
+    assert all(k == 5 for _, k in calls)
+    # every cutoff scored from the same ranked lists, matching a direct eval
+    direct_2 = tai.evaluate_retrieval(make_qa(), search_fn=fake_search_fn, top_k=2)
+    direct_5 = tai.evaluate_retrieval(make_qa(), search_fn=fake_search_fn, top_k=5)
+    assert reports[2].hit_rate == direct_2.hit_rate and reports[2].mrr == direct_2.mrr
+    assert reports[5].hit_rate == direct_5.hit_rate and reports[5].mrr == direct_5.mrr
+    assert reports[2].top_k == 2 and reports[5].top_k == 5
+
+
+def test_sweep_top_k_validates_k_values():
+    with pytest.raises(TaiAitutorError):
+        tai.sweep_top_k(make_qa(), [], search_fn=fake_search_fn)
+    with pytest.raises(TaiAitutorError):
+        tai.sweep_top_k(make_qa(), [0, 5], search_fn=fake_search_fn)
+
+
+def test_context_tokens_and_avg(monkeypatch):
+    monkeypatch.setattr("tai_aitutor.tokens.n_tokens", lambda text, model=None: len(text))
+    hits = [ScoredChunk(chunk=Chunk(id="a", text="12345"), score=1.0, rank=1),
+            ScoredChunk(chunk=Chunk(id="b", text="123"), score=0.9, rank=2)]
+    assert tai.context_tokens(hits) == 8
+    assert tai.context_tokens(["ab", "cd"]) == 4
+
+    report = tai.evaluate_retrieval(make_qa(), search_fn=fake_search_fn, top_k=5)
+    # retrieved ids outside qa.corpus are skipped; gold ids price their corpus text
+    avg = report.avg_context_tokens(make_qa())
+    assert avg == (len("gold 1") + len("gold 2") + 0) / 3
+
+
 # --------------------------------------------------------------------------- #
 # Judges (extract faked)
 # --------------------------------------------------------------------------- #

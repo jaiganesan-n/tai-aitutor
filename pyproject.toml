@@ -7,7 +7,10 @@ name = "tai-aitutor"
 dynamic = ["version"]
 description = "Towards AI course toolkit: plain-Python RAG building blocks (LLMs, embeddings, chunking, retrieval, evals) from the Full Stack AI Engineer course."
 readme = "README.md"
-requires-python = ">=3.13"
+# 3.12 floor: Colab's runtime (2026.04) is Python 3.12.13, and everything the package
+# uses (incl. PEP 695 generics) landed in 3.12. Raising this breaks the install cell
+# of every Colab notebook — don't, without checking Colab's runtime first.
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Towards AI" }]
@@ -17,6 +20,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
@@ -63,7 +67,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]

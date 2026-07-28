@@ -69,6 +69,7 @@ from .evals import (
     QueryResult,
     RelevancyVerdict,
     RetrievalReport,
+    context_tokens,
     evaluate_retrieval,
     hit_rate,
     judge_correctness,
@@ -77,6 +78,7 @@ from .evals import (
     make_qa_pairs,
     mrr,
     run_judges,
+    sweep_top_k,
 )
 from .extractors import (
     SituatedContext,
@@ -134,7 +136,7 @@ from .vectorstore import (
     reset_collection,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     # config
@@ -212,6 +214,8 @@ __all__ = [
     "hit_rate",
     "mrr",
     "evaluate_retrieval",
+    "sweep_top_k",
+    "context_tokens",
     "RetrievalReport",
     "QueryResult",
     "FaithfulnessVerdict",

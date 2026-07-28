@@ -3,6 +3,51 @@
 All notable changes to `tai-aitutor` are documented here.
 Versioning: SemVer. Course notebooks always pin exact versions (`tai-aitutor==X.Y.Z`).
 
+## [1.1.0] — 2026-07-28
+
+Field-test fixes: everything from the notebook-port findings (1-13).
+
+### Fixed (blocker)
+- **Installable on Colab again**: `requires-python` lowered to `>=3.12` — Colab's current
+  runtime (2026.04) is Python 3.12.13, and everything the package uses (incl. PEP 695
+  generics) landed in 3.12. Verified: full suite passes on 3.12.3 and 3.13.13. CI matrix
+  now 3.12/3.13/3.14 (+3.15-dev); wheels build on 3.12. A comment in `pyproject.toml`
+  guards against re-raising the floor without checking Colab first.
+
+### Fixed (correctness)
+- `mini_articles()` keeps the `source` metadata (the CSV's real column — `source_name`
+  was silently dropped, breaking `build_where_filter` and the source-scoping lessons).
+- Readable stable ids: `load_csv` gained `id_col=` / `id_max_chars=40` (duplicates get a
+  `~2` suffix, never collide); `mini_articles()` passes `id_col="title"`, so chunk ids
+  read `"Beyond GPT-4-0000"` and line up with the notebooks' saved eval datasets and
+  existing collections instead of hash-vs-hash duplication on re-ingest.
+- `ai_tutor_knowledge()` uses the corpus's own `doc_id` as the document id and mirrors
+  `name` → `metadata["title"]`, so prompts/tools/`show_*` render document names.
+- `show_chunks`/`show_answer` label fallback now includes `name`
+  (title → name → source_name → source → id).
+
+### Changed (registry, dated 2026-07-28)
+- `CHAT_MODEL_DEFAULTS` bumped to the course-standard models: `gemini-3.6-flash`,
+  `gpt-5.6-luna`, `claude-sonnet-5` — bare `configure(provider=...)` now runs them.
+- `MODEL_PRICES` prices every course-standard model (incl. Llama-4-Scout on Together at
+  ~0.08/0.30; `claude-sonnet-5` at intro 2.00/10.00 → 3.00/15.00 from Aug 2026); the
+  previous generation stays priced so old runs still cost out. Regression test: no
+  course-default model may ever price to `None`.
+- `BASE_URLS["together"]` → `https://api.together.ai/v1` (current docs; was `.xyz`).
+
+### Added
+- `sweep_top_k(qa, k_values, ...)` — one retrieval pass at `max(k)`, every smaller
+  cutoff scored from the same ranked lists (the Larger-Context ablation as one call;
+  N questions cost N retrievals regardless of how many k's you sweep).
+- Context cost next to quality: `RetrievalReport.avg_context_tokens(qa)` and
+  `context_tokens(hits)`; `show_eval_table(reports, extra_columns={...})` renders the
+  extra column without pandas.
+- `embed_cohere(output_dimension=1536)` — Matryoshka pin, defaulted to the course
+  standard 1536 (settable to 256/512/1024, or `None` for the API default).
+- `embed_local(query_prompt=...)` + a known-model instruction map (Qwen3-Embedding,
+  gte-Qwen, Linq-Embed): instruction-tuned retrievers get their query instruction
+  automatically; documents embed plain. The e5 prefix handling is unchanged.
+
 ## [1.0.0] — 2026-07-28
 
 Phase 5 (launch): datasets, migration guide, examples, release machinery. The package now

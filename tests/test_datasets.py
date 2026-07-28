@@ -39,14 +39,20 @@ def test_registry_shapes():
 def test_mini_articles_wiring(monkeypatch, tmp_path):
     csv_path = tmp_path / "mini-llama-articles.csv"
     csv_path.write_text(
-        'title,content,url,source_name,embedding\n'
-        'T1,"Body one",https://a,tai_blog,"[0.1, 0.2]"\n'
-        'T2,"Body two",https://b,tai_blog,"[0.3, 0.4]"\n'
+        'title,content,url,source,embedding\n'                       # real column: "source"
+        'Beyond GPT-4,"Body one",https://a,tai_blog,"[0.1, 0.2]"\n'
+        'Fine-tuning 101,"Body two",https://b,tai_blog,"[0.3, 0.4]"\n'
     )
     monkeypatch.setattr(datasets, "_fetch", lambda key: csv_path)
     docs = tai.mini_articles()
     assert len(docs) == 2
-    assert docs[0].metadata == {"title": "T1", "url": "https://a", "source_name": "tai_blog"}
+    # Finding 2: "source" survives — build_where_filter(sources) depends on it
+    assert docs[0].metadata == {"title": "Beyond GPT-4", "url": "https://a",
+                                "source": "tai_blog"}
+    # Finding 3: readable stable ids from the title, so chunk ids read
+    # "Beyond GPT-4-0000" instead of a hash — and line up across re-ingests
+    assert docs[0].id == "Beyond GPT-4"
+    assert docs[0].stable_id() == "Beyond GPT-4"
 
     embedded = tai.mini_articles(with_embeddings=True)
     assert embedded[0].metadata["embedding"] == [0.1, 0.2]
@@ -54,10 +60,18 @@ def test_mini_articles_wiring(monkeypatch, tmp_path):
 
 def test_ai_tutor_knowledge_wiring(monkeypatch, tmp_path):
     jsonl = tmp_path / "kb.jsonl"
-    jsonl.write_text(json.dumps({"id": "d1", "content": "Doc text.", "source": "hf"}) + "\n")
+    jsonl.write_text(
+        json.dumps({"doc_id": "hf_transformers/quicktour", "content": "Doc text.",
+                    "name": "Transformers Quicktour", "source": "hf"}) + "\n"
+    )
     monkeypatch.setattr(datasets, "_fetch", lambda key: jsonl)
     docs = tai.ai_tutor_knowledge()
-    assert docs[0].id == "d1" and docs[0].metadata["source"] == "hf"
+    # Finding 4: the corpus's own doc_id is the document id (not a hash)
+    assert docs[0].id == "hf_transformers/quicktour"
+    assert "doc_id" not in docs[0].metadata
+    # Finding 5: "name" is mirrored into "title" so displays/prompts show names
+    assert docs[0].metadata["title"] == "Transformers Quicktour"
+    assert docs[0].metadata["source"] == "hf"
 
 
 def test_qa_dataset_wiring_and_unknown(monkeypatch, tmp_path):

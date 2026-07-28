@@ -29,6 +29,15 @@ def test_estimate_cost_unknown_model_returns_none():
 
 
 def test_estimate_cost_uses_configured_model_by_default():
-    tai.configure(provider="gemini")  # gemini-2.5-flash: 0.30 / 2.50
+    tai.configure(provider="gemini")  # gemini-3.6-flash: 1.50 / 7.50 (as of 2026-07)
     cost = tai.estimate_cost(2_000_000, 0)
-    assert cost == 0.60
+    assert cost == 3.00
+
+
+def test_estimate_cost_prices_all_course_standard_models():
+    # Finding 7: the models the course actually uses must never price to None.
+    from tai_aitutor.config import CHAT_MODEL_DEFAULTS
+
+    for provider in ("gemini", "openai", "anthropic", "together"):
+        model = CHAT_MODEL_DEFAULTS[provider]
+        assert tai.estimate_cost(1000, 1000, model=model) is not None, model

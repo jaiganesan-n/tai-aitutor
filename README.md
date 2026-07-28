@@ -11,7 +11,8 @@ modules, plain functions, readable source. If you can't read a module in one sit
 
 ## Install
 
-Requires **Python 3.13+** (CI runs 3.13 and 3.14, plus the 3.15 pre-release).
+Requires **Python 3.12+** — 3.12 is Colab's current runtime, so the floor stays there
+as long as Colab does (CI runs 3.12, 3.13, 3.14, plus the 3.15 pre-release).
 
 ```bash
 # Course profile A (every notebook): the three providers
@@ -76,7 +77,7 @@ show_answer(answer("What is RAG?", col, top_k=5))          # retrieve → prompt
 | `vectorstore` | `get_collection`, `reset_collection`, `ingest`, `get_all_chunks`, `build_where_filter` | `ChromaVectorStore`, `StorageContext`, `IngestionPipeline`, `VectorStoreIndex.from_documents`, persist/load |
 | `retrieval` | `search`, `ScoredChunk`, `expand_window`, `code_tokenize`, `BM25Index`, `rrf_fuse`, `hybrid_search`, `rerank`, `judge_rerank`, `hyde_search`, `decompose_question`, `subquestion_answer`, `multi_step_answer`, `pack_context` | `as_retriever().retrieve()`, `VectorIndexRetriever`, `NodeWithScore`, `MetadataReplacementPostProcessor`, `SimpleKeywordTableIndex`, `KeywordTableSimpleRetriever`, `CohereRerank`, `RankGPTRerank`, `BaseNodePostprocessor`, `HyDEQueryTransform`, `TransformQueryEngine`, `SubQuestionQueryEngine`, `LLMQuestionGenerator`, `QueryEngineTool`, `ToolMetadata`, `MultiStepQueryEngine`, `StepDecomposeQueryTransform`, `RetrieverQueryEngine` |
 | `synthesis` | `answer`, `answer_with_sources`, `answer_stream`, `Answer`, `build_rag_prompt` | `as_query_engine().query()`, `get_response_synthesizer`, `Response.source_nodes` |
-| `evals` | `QADataset` (legacy-JSON compatible), `make_qa_pairs`, `hit_rate`, `mrr`, `evaluate_retrieval`, `judge_faithfulness` / `judge_relevancy` / `judge_correctness`, `run_judges` | `generate_question_context_pairs`, `EmbeddingQAFinetuneDataset`, `RetrieverEvaluator`, `FaithfulnessEvaluator` / `RelevancyEvaluator` / `CorrectnessEvaluator`, `BatchEvalRunner` |
+| `evals` | `QADataset` (legacy-JSON compatible), `make_qa_pairs`, `hit_rate`, `mrr`, `evaluate_retrieval`, `sweep_top_k`, `context_tokens`, `judge_faithfulness` / `judge_relevancy` / `judge_correctness`, `run_judges` | `generate_question_context_pairs`, `EmbeddingQAFinetuneDataset`, `RetrieverEvaluator`, `FaithfulnessEvaluator` / `RelevancyEvaluator` / `CorrectnessEvaluator`, `BatchEvalRunner` |
 | `extractors` | `extract_keywords`, `extract_summary`, `extract_questions`, `situate_chunk(s)` | `KeywordExtractor`, `SummaryExtractor`, `QuestionsAnsweredExtractor` |
 | `tools` | `tool()`, `Tool`, `make_retrieval_tool`, `search_web`, `render_tool_result` | `QueryEngineTool`, `ToolMetadata`, `TavilyToolSpec`, `LoadAndSearchToolSpec` |
 | `chat` | `Chat` (full/window/summary memory), `ToolLoop`, `ChatEvent` | `as_chat_engine(chat_mode=...)`, `FunctionAgent`, `ReActAgent`, `AgentStream`, `ToolCallResult`, `Context`, `ChatSummaryMemoryBuffer` |
@@ -145,4 +146,3 @@ to PyPI via Trusted Publishing (see `.github/workflows/release.yml`).
 ## License
 
 MIT © Towards AI
-# tai-aitutor

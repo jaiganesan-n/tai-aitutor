@@ -10,21 +10,21 @@ from tai_aitutor.errors import MissingKeyError, UnsupportedProviderError
 def test_defaults_are_gemini():
     c = tai.get_config()
     assert c.provider == "gemini"
-    assert c.chat_model == "gemini-2.5-flash"
+    assert c.chat_model == "gemini-3.6-flash"
     assert c.embed_provider == "gemini"
     assert c.embed_model == "gemini-embedding-001"
 
 
 def test_openai_pairs_with_openai_embeddings():
     c = tai.configure(provider="openai")
-    assert c.chat_model == "gpt-5-mini"
+    assert c.chat_model == "gpt-5.6-luna"
     assert c.embed_provider == "openai"
     assert c.embed_model == "text-embedding-3-small"
 
 
 def test_anthropic_pairs_with_gemini_embeddings():
     c = tai.configure(provider="anthropic")
-    assert c.chat_model == "claude-sonnet-4-6"
+    assert c.chat_model == "claude-sonnet-5"
     assert c.embed_provider == "gemini"  # Decision 2: Anthropic has no embeddings API
 
 
@@ -56,7 +56,7 @@ def test_resolve_per_call_provider_override_leaves_global_untouched():
     tai.configure(provider="gemini")
     call_cfg = cfg.resolve(provider="openai")
     assert call_cfg.provider == "openai"
-    assert call_cfg.chat_model == "gpt-5-mini"
+    assert call_cfg.chat_model == "gpt-5.6-luna"
     assert tai.get_config().provider == "gemini"  # global unchanged
 
 

@@ -131,14 +131,24 @@ def mini_articles(with_embeddings: bool = False) -> list[Document]:
     return load_csv(
         path,
         text_col="content",
-        meta_cols=("title", "url", "source_name"),
-        embedding_col="embedding" if with_embeddings else None,
-    )
+        meta_cols=("title", "url", "source"),  # the CSV's real columns — "source" feeds
+        embedding_col="embedding" if with_embeddings else None,  # build_where_filter()
+        id_col="title",  # readable stable ids: chunks become "Title…-0000", not a hash —
+    )  # keeps saved eval datasets and existing collections lined up across re-ingests
 
 
 def ai_tutor_knowledge() -> list[Document]:
-    """The full AI-tutor knowledge base (one JSONL document per source page)."""
-    return load_jsonl(_fetch("kb_jsonl"), text_key="content")
+    """The full AI-tutor knowledge base (one JSONL document per source page).
+
+    Uses the corpus's own ``doc_id`` field as the document id (stable across
+    re-ingests) and mirrors its ``name`` field into ``metadata["title"]`` so
+    prompts, tools, and ``show_*`` helpers render document names, not chunk ids.
+    """
+    docs = load_jsonl(_fetch("kb_jsonl"), text_key="content", id_key="doc_id")
+    for doc in docs:
+        if "title" not in doc.metadata and doc.metadata.get("name"):
+            doc.metadata["title"] = doc.metadata["name"]
+    return docs
 
 
 def prebuilt_chroma(variant: str = "default") -> Path:

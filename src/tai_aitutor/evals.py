@@ -39,6 +39,8 @@ __all__ = [
     "hit_rate",
     "mrr",
     "evaluate_retrieval",
+    "sweep_top_k",
+    "context_tokens",
     "RetrievalReport",
     "QueryResult",
     "FaithfulnessVerdict",
@@ -225,11 +227,41 @@ class RetrievalReport:
         """The queries whose gold chunk was never retrieved — read these, always."""
         return [r for r in self.per_query if not r.hit]
 
+    def avg_context_tokens(self, qa: QADataset) -> float:
+        """Mean tokens of retrieved context per query — the cost column every
+        ablation table wants next to hit rate and MRR.
+
+        Prices retrieved ids against ``qa.corpus`` texts; ids outside the eval
+        corpus are skipped (they weren't part of the measured set), so treat
+        this as the comparable-across-configs number, not an exact API bill —
+        :func:`context_tokens` prices actual hits exactly.
+        """
+        from .tokens import n_tokens
+
+        if not self.per_query:
+            return 0.0
+        totals = [
+            sum(n_tokens(qa.corpus[cid]) for cid in result.retrieved_ids if cid in qa.corpus)
+            for result in self.per_query
+        ]
+        return sum(totals) / len(totals)
+
     def __repr__(self) -> str:
         return (
             f"RetrievalReport(top_k={self.top_k}, n={self.n_queries}, "
             f"hit_rate={self.hit_rate:.3f}, mrr={self.mrr:.3f})"
         )
+
+
+def context_tokens(hits) -> int:
+    """Total tokens of a retrieved context (ScoredChunk/Chunk lists or strings).
+
+    The exact per-call cost of what you're about to stuff into the prompt —
+    pairs with ``estimate_cost(context_tokens(hits), ...)``.
+    """
+    from .tokens import n_tokens
+
+    return sum(n_tokens(item.text if hasattr(item, "text") else str(item)) for item in hits)
 
 
 def _retrieved_ids(result) -> list[str]:
@@ -300,6 +332,68 @@ def evaluate_retrieval(
         top_k=top_k,
         per_query=per_query,
     )
+
+
+def _score_ranked(
+    qa: QADataset, ranked_ids: dict[str, list[str]], top_k: int
+) -> RetrievalReport:
+    """Score already-retrieved ranked ids at a given cutoff (no retrieval calls)."""
+    per_query: list[QueryResult] = []
+    for qid, question in qa.queries.items():
+        gold = set(qa.relevant_docs.get(qid, []))
+        retrieved = ranked_ids.get(qid, [])[:top_k]
+        rank = next((i + 1 for i, rid in enumerate(retrieved) if rid in gold), None)
+        per_query.append(
+            QueryResult(
+                query_id=qid,
+                question=question,
+                gold_ids=sorted(gold),
+                retrieved_ids=retrieved,
+                first_relevant_rank=rank,
+            )
+        )
+    n = len(per_query) or 1
+    return RetrievalReport(
+        hit_rate=sum(r.hit for r in per_query) / n,
+        mrr=sum(r.reciprocal_rank for r in per_query) / n,
+        top_k=top_k,
+        per_query=per_query,
+    )
+
+
+def sweep_top_k(
+    qa: QADataset,
+    k_values,
+    search_fn: Callable[[str, int], list] | None = None,
+    collection=None,
+    show_progress: bool = False,
+) -> dict[int, RetrievalReport]:
+    """One retrieval pass, every top-k scored from it — the ablation workhorse.
+
+    Retrieves each question ONCE at ``max(k_values)`` and scores every smaller
+    cutoff from the same ranked list (a top-k cutoff is just a slice — that's
+    the seam the Larger-Context lesson teaches inline before importing this).
+    N questions cost N retrievals regardless of how many k values you sweep.
+
+    >>> reports = sweep_top_k(qa, [2, 4, 6, 8, 10], collection=col)
+    >>> show_eval_table({f"top_k={k}": r for k, r in reports.items()})
+    """
+    ks = sorted({int(k) for k in k_values})
+    if not ks or ks[0] <= 0:
+        raise TaiAitutorError(f"k_values must be positive ints, got {list(k_values)!r}")
+    fn = _make_search_fn(search_fn, collection)
+    max_k = ks[-1]
+
+    items: Iterable = qa.queries.items()
+    if show_progress:
+        from tqdm.auto import tqdm
+
+        items = tqdm(list(items), desc=f"sweep_top_k max_k={max_k}")
+
+    ranked: dict[str, list[str]] = {
+        qid: _retrieved_ids(fn(question, max_k))[:max_k] for qid, question in items
+    }
+    return {k: _score_ranked(qa, ranked, k) for k in ks}
 
 
 def hit_rate(qa: QADataset, search_fn=None, collection=None, top_k: int = 5) -> float:

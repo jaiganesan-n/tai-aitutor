@@ -80,6 +80,8 @@ def load_csv(
     text_col: str,
     meta_cols: tuple[str, ...] | list[str] = (),
     embedding_col: str | None = None,
+    id_col: str | None = None,
+    id_max_chars: int = 40,
 ) -> list[Document]:
     """Load a CSV (local path or URL) into Documents.
 
@@ -88,6 +90,13 @@ def load_csv(
     column is parsed with ``json.loads`` (a JSON array of floats) and stored as
     ``metadata["embedding"]`` — the precomputed-embeddings checkpoint pattern
     from the Basic RAG lesson, without the old ``eval()`` hazard.
+
+    ``id_col`` makes document ids READABLE: ``Document.id`` becomes that
+    column's value (truncated to ``id_max_chars``, the course convention), so
+    chunk ids read ``"Beyond GPT-4-0000"`` instead of a hash. Duplicate values
+    get a ``~2``, ``~3``… suffix so chunk ids can never collide across
+    documents. Stable, readable ids are what keep saved eval datasets and
+    existing collections lined up across re-ingests.
     """
     csv.field_size_limit(sys.maxsize)  # course articles exceed the default field cap
     raw = _read_text(path_or_url)
@@ -96,8 +105,13 @@ def load_csv(
         raise TaiAitutorError(
             f"CSV has no {text_col!r} column. Found columns: {reader.fieldnames}"
         )
+    if id_col is not None and id_col not in reader.fieldnames:
+        raise TaiAitutorError(
+            f"CSV has no {id_col!r} column (id_col). Found columns: {reader.fieldnames}"
+        )
 
     docs: list[Document] = []
+    seen_ids: dict[str, int] = {}
     for row in reader:
         text = (row.get(text_col) or "").strip()
         if not text:
@@ -112,7 +126,14 @@ def load_csv(
                     f"Column {embedding_col!r} is not valid JSON. Store embeddings as JSON "
                     "arrays (json.dumps) — never rely on eval()-style Python literals."
                 ) from exc
-        docs.append(Document(text=text, metadata=metadata))
+        doc_id = None
+        if id_col is not None:
+            doc_id = str(row.get(id_col) or "").strip()[:id_max_chars] or None
+            if doc_id is not None:
+                seen_ids[doc_id] = seen_ids.get(doc_id, 0) + 1
+                if seen_ids[doc_id] > 1:
+                    doc_id = f"{doc_id}~{seen_ids[doc_id]}"
+        docs.append(Document(text=text, metadata=metadata, id=doc_id))
     return docs
 
 

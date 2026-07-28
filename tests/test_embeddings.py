@@ -98,9 +98,14 @@ def test_cohere_input_type_mapping(monkeypatch):
     assert len(out) == 2
     assert calls[0]["input_type"] == "search_document"
     assert calls[0]["model"] == "embed-v4.0"
+    assert calls[0]["output_dimension"] == 1536  # course standard (Matryoshka pin)
 
-    tai.embed_cohere("a query", task="query")
+    tai.embed_cohere("a query", task="query", output_dimension=512)
     assert calls[1]["input_type"] == "search_query"
+    assert calls[1]["output_dimension"] == 512
+
+    tai.embed_cohere("plain", output_dimension=None)  # take the API default
+    assert "output_dimension" not in calls[2]
 
 
 def test_local_e5_prefixes(monkeypatch):
@@ -116,6 +121,31 @@ def test_local_e5_prefixes(monkeypatch):
     assert captured["items"] == ["passage: some passage"]
     tai.embed_local("find me", model_name="intfloat/e5-small-v2", task="query")
     assert captured["items"] == ["query: find me"]
-    # non-e5 models get no prefix
+    # non-e5, non-instruction models get no prefix
     tai.embed_local("plain", model_name="BAAI/bge-small-en-v1.5", task="query")
     assert captured["items"] == ["plain"]
+
+
+def test_local_instruction_tuned_query_prompts(monkeypatch):
+    captured = {}
+
+    class FakeModel:
+        def encode(self, items, **kwargs):
+            captured["items"] = items
+            return [[0.0] * 4 for _ in items]
+
+    monkeypatch.setattr(embeddings, "_get_local_model", lambda name: FakeModel())
+
+    # known instruction-tuned model → instruction applied automatically (queries only)
+    tai.embed_local("find rag", model_name="Qwen/Qwen3-Embedding-0.6B", task="query")
+    assert captured["items"][0].startswith("Instruct: ")
+    assert captured["items"][0].endswith("Query: find rag")
+    tai.embed_local("a passage", model_name="Qwen/Qwen3-Embedding-0.6B", task="document")
+    assert captured["items"] == ["a passage"]  # documents embed plain
+
+    # explicit query_prompt overrides / covers unknown models
+    tai.embed_local("find rag", model_name="some/unknown-model", task="query",
+                    query_prompt="MY-INSTRUCTION: ")
+    assert captured["items"] == ["MY-INSTRUCTION: find rag"]
+    tai.embed_local("find rag", model_name="some/unknown-model", task="query")
+    assert captured["items"] == ["find rag"]  # unknown + no prompt → unchanged

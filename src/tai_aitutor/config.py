@@ -37,11 +37,12 @@ OPENAI_COMPATIBLE_PROVIDERS = ("together", "deepseek", "perplexity", "ollama")
 
 PROVIDERS = NATIVE_PROVIDERS + OPENAI_COMPATIBLE_PROVIDERS
 
-#: Default chat model per provider. Verified at each course release.
+#: Default chat model per provider — the COURSE STANDARD models, verified at each
+#: course release (last sweep: 2026-07, per the notebook-port field test).
 CHAT_MODEL_DEFAULTS: dict[str, str] = {
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-5-mini",
-    "anthropic": "claude-sonnet-4-6",
+    "gemini": "gemini-3.6-flash",
+    "openai": "gpt-5.6-luna",
+    "anthropic": "claude-sonnet-5",
     "together": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     "deepseek": "deepseek-chat",
     "perplexity": "sonar",
@@ -58,7 +59,7 @@ EMBED_MODEL_DEFAULTS: dict[str, str] = {
 
 #: Base URLs for the OpenAI-compatible providers.
 BASE_URLS: dict[str, str] = {
-    "together": "https://api.together.xyz/v1",
+    "together": "https://api.together.ai/v1",  # per Together's current docs (2026-07)
     "deepseek": "https://api.deepseek.com",
     "perplexity": "https://api.perplexity.ai",
     "ollama": "http://localhost:11434/v1",
@@ -76,13 +77,20 @@ API_KEY_ENV: dict[str, str | None] = {
     "ollama": None,
 }
 
-#: USD per 1M tokens (input, output) — AS OF 2026-07; verify at each course release.
+#: USD per 1M tokens (input, output) — AS OF 2026-07-28; verify at each course release.
 #: Models missing from this table make ``estimate_cost`` return None (never a wrong number).
 MODEL_PRICES: dict[str, tuple[float, float]] = {
+    # current course-standard chat models
+    "gemini-3.6-flash": (1.50, 7.50),
+    "gpt-5.6-luna": (1.00, 6.00),
+    "claude-sonnet-5": (2.00, 10.00),  # intro pricing — 3.00/15.00 from Aug 2026
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct": (0.08, 0.30),  # Together, approx.
+    # previous generation (still callable; kept so old notebook runs still price)
     "gemini-2.5-flash": (0.30, 2.50),
     "gpt-5": (1.25, 10.00),
     "gpt-5-mini": (0.25, 2.00),
     "claude-sonnet-4-6": (3.00, 15.00),
+    # embeddings
     "text-embedding-3-small": (0.02, 0.0),
     "gemini-embedding-001": (0.15, 0.0),
 }

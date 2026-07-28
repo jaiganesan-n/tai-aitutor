@@ -95,7 +95,7 @@ def test_generate_gemini_default(fake_clients):
     out = tai.generate("hello", system="be brief")
     assert out == "gemini says hi"
     call = fake_clients.gemini.models.calls[0]
-    assert call["model"] == "gemini-2.5-flash"
+    assert call["model"] == "gemini-3.6-flash"
     assert call["config"].system_instruction == "be brief"
 
 
@@ -104,7 +104,7 @@ def test_generate_openai_uses_responses_api(fake_clients):
     out = tai.generate("hello", system="sys", reasoning_effort="minimal", max_tokens=64)
     assert out == "openai says hi"
     call = fake_clients.openai.responses.calls[0]
-    assert call["model"] == "gpt-5-mini"
+    assert call["model"] == "gpt-5.6-luna"
     assert call["instructions"] == "sys"
     assert call["reasoning"] == {"effort": "minimal"}
     assert call["max_output_tokens"] == 64
@@ -115,7 +115,7 @@ def test_generate_anthropic_sets_required_max_tokens(fake_clients):
     out = tai.generate("hello")
     assert out == "claude says hi"
     call = fake_clients.anthropic.messages.calls[0]
-    assert call["model"] == "claude-sonnet-4-6"
+    assert call["model"] == "claude-sonnet-5"
     assert call["max_tokens"] == 4096  # Anthropic requires it; we default it
     assert "system" not in call  # not passed when None
 
