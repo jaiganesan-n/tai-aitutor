@@ -13,9 +13,14 @@ jobs:
       matrix:
         # 3.12 is Colab's runtime — it stays in the matrix as long as Colab ships it.
         python-version: ["3.12", "3.13", "3.14"]
+        extras: ["gemini,openai,anthropic,rag,rerank,parse"]
         include:
           # 3.15 final lands Oct 2026 — test the pre-release, but don't block merges on it.
+          # No [rag] extra there: chromadb depends on onnxruntime, which ships no wheels
+          # for pre-release Pythons, so the resolve fails before tests can run. The
+          # chroma-backed tests importorskip("chromadb") and skip cleanly instead.
           - python-version: "3.15-dev"
+            extras: "gemini,openai,anthropic,rerank,parse"
     continue-on-error: ${{ matrix.python-version == '3.15-dev' }}
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +30,7 @@ jobs:
           allow-prereleases: true
           cache: pip
       - name: Install
-        run: pip install -e ".[gemini,openai,anthropic,rag,rerank,parse]" pytest ruff
+        run: pip install -e ".[${{ matrix.extras }}]" pytest ruff
       - name: Lint
         run: ruff check src tests
       - name: Tests (offline — SDKs are faked)
