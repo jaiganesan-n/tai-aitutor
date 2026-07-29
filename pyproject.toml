@@ -69,9 +69,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/towardsai/tai-aitutor"
-Repository = "https://github.com/towardsai/tai-aitutor"
-Changelog = "https://github.com/towardsai/tai-aitutor/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/jaiganesan-n/tai-aitutor"
+Repository = "https://github.com/jaiganesan-n/tai-aitutor"
+Changelog = "https://github.com/jaiganesan-n/tai-aitutor/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/tai_aitutor/__init__.py"

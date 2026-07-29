@@ -3,7 +3,7 @@
 # One-time setup (no API tokens stored anywhere):
 #   1. On pypi.org → your project (or "pending publisher" before first release) →
 #      Publishing → add GitHub publisher:
-#        owner: towardsai   repo: tai-aitutor   workflow: release.yml   environment: pypi
+#        owner: jaiganesan-n   repo: tai-aitutor   workflow: release.yml   environment: pypi
 #   2. In the GitHub repo → Settings → Environments → create "pypi"
 #      (optionally add required reviewers for a manual approval gate).
 #
