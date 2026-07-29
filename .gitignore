@@ -27,3 +27,8 @@ htmlcov/
 # Course data caches
 .chroma/
 *.gz
+
+
+# Log files
+BUILD_STATUS.md
+CHANGELOG.md

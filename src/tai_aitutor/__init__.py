@@ -35,13 +35,6 @@ from .config import (
     require_keys,
     setup_notebook,
 )
-from .datasets import (
-    ai_tutor_knowledge,
-    mini_articles,
-    prebuilt_chroma,
-    qa_dataset,
-    research_papers,
-)
 from .display import show_answer, show_chunks, show_eval_table
 from .documents import (
     Document,
@@ -136,7 +129,7 @@ from .vectorstore import (
     reset_collection,
 )
 
-__version__ = "1.1.0"
+__version__ = "0.0.1"
 
 __all__ = [
     # config
@@ -250,12 +243,6 @@ __all__ = [
     "make_training_pairs",
     "train_embedder",
     "evaluate_embedder",
-    # datasets
-    "mini_articles",
-    "ai_tutor_knowledge",
-    "prebuilt_chroma",
-    "qa_dataset",
-    "research_papers",
     # display
     "show_chunks",
     "show_answer",

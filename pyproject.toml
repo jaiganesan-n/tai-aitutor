@@ -34,20 +34,38 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+# NOTE: extras are FLAT lists on purpose. Self-referential extras like
+# "tai-aitutor[gemini,...]" resolve against PyPI, so they break git/local installs
+# whenever the published index lags the code. Never reintroduce them.
+# cohere and sentence-transformers are LESSON-SPECIFIC heavies: nothing imports them
+# unless embed_cohere/rerank or embed_local/finetune is actually called, so notebooks
+# may also just `pip install cohere` / `pip install sentence-transformers` directly.
 [project.optional-dependencies]
 gemini = ["google-genai>=1.35"]
 openai = ["openai>=2,<3"]
 anthropic = ["anthropic>=0.40"]
-providers = ["tai-aitutor[gemini,openai,anthropic]"]
+providers = ["google-genai>=1.35", "openai>=2,<3", "anthropic>=0.40"]
 rag = ["chromadb>=1.0.21"]
-rerank = ["cohere>=5.18"]
+rerank = ["cohere>=5.13"]
 local = ["sentence-transformers>=3.0"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.19", "accelerate>=0.30"]
 parse = ["pypdf>=4.2"]
 web = ["tavily-python>=0.5", "wikipedia>=1.4"]
 data = ["huggingface-hub>=0.23", "pandas>=2.0"]
 all = [
-    "tai-aitutor[providers,rag,rerank,local,finetune,parse,web,data]",
+    "google-genai>=1.35",
+    "openai>=2,<3",
+    "anthropic>=0.40",
+    "chromadb>=1.0.21",
+    "cohere>=5.13",
+    "sentence-transformers>=3.0",
+    "datasets>=2.19",
+    "accelerate>=0.30",
+    "pypdf>=4.2",
+    "tavily-python>=0.5",
+    "wikipedia>=1.4",
+    "huggingface-hub>=0.23",
+    "pandas>=2.0",
 ]
 
 [project.urls]

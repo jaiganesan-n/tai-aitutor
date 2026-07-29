@@ -16,6 +16,7 @@ picks Anthropic for chat still embeds with Gemini (default) or OpenAI.
 
 from __future__ import annotations
 
+import warnings
 from typing import overload
 
 from . import config as _cfg
@@ -169,13 +170,29 @@ def embed_cohere(
             kwargs: dict = {}
             if output_dimension is not None:
                 kwargs["output_dimension"] = output_dimension
-            resp = client.embed(
-                texts=b,
-                model=model,
-                input_type=_COHERE_TASKS[task],
-                embedding_types=["float"],
-                **kwargs,
-            )
+            try:
+                resp = client.embed(
+                    texts=b,
+                    model=model,
+                    input_type=_COHERE_TASKS[task],
+                    embedding_types=["float"],
+                    **kwargs,
+                )
+            except TypeError:
+                # Older cohere SDKs predate output_dimension — degrade loudly, not fatally.
+                if not kwargs:
+                    raise
+                warnings.warn(
+                    "This cohere SDK does not support output_dimension= — embedding at the "
+                    "model default instead. pip install 'cohere>=5.13' to pin dimensions.",
+                    stacklevel=3,
+                )
+                resp = client.embed(
+                    texts=b,
+                    model=model,
+                    input_type=_COHERE_TASKS[task],
+                    embedding_types=["float"],
+                )
             floats = getattr(resp.embeddings, "float_", None)
             if floats is None:  # SDK versions differ on the alias
                 floats = getattr(resp.embeddings, "float")

@@ -10,8 +10,10 @@ Run locally:  pip install "tai-aitutor[gemini,openai,anthropic,rag,data]" gradio
               python examples/gradio_tutor.py
 """
 
+import zipfile
+from pathlib import Path
+
 from tai_aitutor import Chat, configure, get_collection, make_retrieval_tool, setup_notebook
-from tai_aitutor.datasets import prebuilt_chroma
 
 SYSTEM_PROMPT = (
     "You are an AI teacher answering questions from students of an applied AI course "
@@ -21,13 +23,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def download_vector_store() -> Path:
+    """Explicit data download — swap repo_id/filename when the data moves (your call)."""
+    from huggingface_hub import hf_hub_download
+
+    archive = Path(hf_hub_download(repo_id="jaiganesan/ai_tutor_knowledge",
+                                   filename="vectorstore.zip", repo_type="dataset"))
+    extracted = archive.with_suffix("")
+    if not extracted.exists():
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(extracted)
+    inner = [p for p in extracted.iterdir() if p.is_dir()]
+    return inner[0] if len(inner) == 1 else extracted
+
+
 def build_chat(provider: str) -> Chat:
     # ⚠ the hosted store is embedded with OpenAI text-embedding-3-small — the query-time
-    # embedder must match (this is the coupling the course plan flags; the Gemini-embedded
-    # store replaces it with the org data migration).
+    # embedder must match (this is the coupling the course plan flags; a Gemini-embedded
+    # store replaces it after the data migration).
     configure(provider=provider, embed_provider="openai")
-    store_path = prebuilt_chroma()
-    col = get_collection("ai_tutor_knowledge", path=str(store_path))
+    col = get_collection("ai_tutor_knowledge", path=str(download_vector_store()))
     return Chat(
         system=SYSTEM_PROMPT,
         tools=[make_retrieval_tool(col, top_k=5)],
