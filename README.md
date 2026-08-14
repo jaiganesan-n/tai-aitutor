@@ -210,7 +210,7 @@ full LlamaIndex inventory: `docs/PACKAGE_PLAN.md`.
 ## Development
 
 ```bash
-pip install -e ".[gemini,openai,anthropic,rag,rerank,parse]" pytest ruff
+pip install -e ".[gemini,openai,anthropic,rag,rerank]" pytest ruff
 pytest              # fully offline — provider SDKs are faked
 ruff check src tests
 ```

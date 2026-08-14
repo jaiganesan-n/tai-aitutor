@@ -17,7 +17,7 @@ passes explicitly, loud failures with fix-it messages.
 Python **>= 3.13**.
 
 ```bash
-pip install -e ".[gemini,openai,anthropic,rag,rerank,parse]" pytest ruff
+pip install -e ".[gemini,openai,anthropic,rag,rerank]" pytest ruff
 pytest              # fully offline — provider SDKs are faked, Chroma runs ephemeral
 ruff check src tests
 ```

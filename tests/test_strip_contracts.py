@@ -140,8 +140,17 @@ def test_missing_key_names_the_variable_to_set(monkeypatch, call, env, needle):
 
 
 def test_missing_cohere_key_is_actionable(monkeypatch):
-    monkeypatch.delenv("COHERE_API_KEY", raising=False)
     pytest.importorskip("cohere")
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    # A real candidate is required: rerank() returns [] for an empty list before it
+    # ever builds a client, so passing [] would test the short-circuit, not the key.
+    hits = [tai.ScoredChunk(chunk=tai.Chunk(id="c1", text="candidate"), score=1.0, rank=1)]
     with pytest.raises(tai.MissingKeyError) as err:
-        tai.rerank("q", [])
+        tai.rerank("q", hits)
     assert "COHERE_API_KEY" in str(err.value)
+
+
+def test_rerank_of_nothing_costs_nothing(monkeypatch):
+    """Empty candidates short-circuit — no client, no key, no API call."""
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    assert tai.rerank("q", []) == []
