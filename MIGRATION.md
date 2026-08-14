@@ -1,14 +1,13 @@
 # Migrating from LlamaIndex to `tai_aitutor`
 
-The migration guide now lives in the [README](README.md#migration-map-llamaindex--tai_aitutor)
-— the README *is* the migration doc, symbol by symbol.
+The migration guide lives in the [README](README.md#migration-map-llamaindex--tai_aitutor)
+— it pairs the two libraries symbol by symbol.
 
-Quick reminders while porting a notebook:
+Quick reminders while porting:
 
-- Delete every `nest_asyncio.apply()` cell, every `llama-index-*` pip pin, and
+- Delete every `nest_asyncio.apply()` call, every `llama-index-*` pip pin, and
   `LLAMA_CLOUD_API_KEY` setup.
-- Data downloads stay in the notebook (wget / `hf_hub_download`) — the package ships no
-  dataset URLs by design; hand the downloaded file to `load_csv` / `load_jsonl` /
-  `QADataset.load`.
-- Full design rationale + the complete 82-symbol LlamaIndex inventory:
-  [`docs/PACKAGE_PLAN.md`](docs/PACKAGE_PLAN.md).
+- The package ships no dataset URLs and no downloaders. Download the file however you
+  like, then hand it to `load_csv` / `QADataset.load`.
+- `QADataset.load` reads LlamaIndex's `EmbeddingQAFinetuneDataset` JSON unchanged, so
+  existing eval sets carry over as-is.

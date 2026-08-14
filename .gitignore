@@ -24,11 +24,14 @@ htmlcov/
 .idea/
 .DS_Store
 
-# Course data caches
+# Local data caches
 .chroma/
 *.gz
 
-
-# Log files
+# Internal — kept locally, not published with the package
 BUILD_STATUS.md
 CHANGELOG.md
+CONTRIBUTING.md
+docs/
+scripts/
+_to_delete/
