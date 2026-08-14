@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tai-aitutor"
 dynamic = ["version"]
-description = "Towards AI course toolkit: plain-Python RAG building blocks (LLMs, embeddings, chunking, retrieval, evals) from the Full Stack AI Engineer course."
+description = "Plain-Python RAG building blocks — LLMs, embeddings, chunking, retrieval and evaluation — as a migration path off LlamaIndex."
 readme = "README.md"
 # 3.12 floor: Colab's runtime (2026.04) is Python 3.12.13, and everything the package
 # uses (incl. PEP 695 generics) landed in 3.12. Raising this breaks the install cell
@@ -14,7 +14,7 @@ requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Towards AI" }]
-keywords = ["rag", "llm", "embeddings", "retrieval", "evaluation", "course", "towardsai"]
+keywords = ["rag", "llm", "embeddings", "retrieval", "evaluation", "llamaindex", "chroma"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -65,7 +65,6 @@ all = [
 [project.urls]
 Homepage = "https://github.com/jaiganesan-n/tai-aitutor"
 Repository = "https://github.com/jaiganesan-n/tai-aitutor"
-Changelog = "https://github.com/jaiganesan-n/tai-aitutor/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/tai_aitutor/__init__.py"

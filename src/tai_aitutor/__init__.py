@@ -105,7 +105,7 @@ from .tokens import n_tokens
 from .tools import Tool, search_web, tool
 from .vectorstore import build_where_filter, get_all_chunks, get_collection, reset_collection
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = [
     # config — which provider and model the package calls
