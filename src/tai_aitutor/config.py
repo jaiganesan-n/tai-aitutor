@@ -37,12 +37,18 @@ OPENAI_COMPATIBLE_PROVIDERS = ("together", "deepseek", "perplexity", "ollama")
 
 PROVIDERS = NATIVE_PROVIDERS + OPENAI_COMPATIBLE_PROVIDERS
 
-#: Default chat model per provider — the COURSE STANDARD models, verified at each
-#: course release (last sweep: 2026-07, per the notebook-port field test).
+#: Default chat model per provider. The package carries no model defaults of its
+#: own: these are Decision 2's, as quoted in the strip spec, as of 2026-08-13.
+# TODO: [NEEDS UPDATE — confirm the three native chat defaults | source: internal doc
+# (course_update_plan.md v4, Decision 2) | the strip spec says Decision 2 mandates
+# gemini-3.5-flash-lite and claude-haiku-4-5, but the swept notebooks (02-Basic_RAG cell 6)
+# set MODELS = {"gemini": "gemini-3.6-flash", "openai": "gpt-5.6-luna",
+# "anthropic": "claude-sonnet-5"}. The spec's values are applied below per the
+# spec-is-primary decision; the notebooks disagree and need reconciling.]
 CHAT_MODEL_DEFAULTS: dict[str, str] = {
-    "gemini": "gemini-3.6-flash",
+    "gemini": "gemini-3.5-flash-lite",
     "openai": "gpt-5.6-luna",
-    "anthropic": "claude-sonnet-5",
+    "anthropic": "claude-haiku-4-5",
     "together": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     "deepseek": "deepseek-chat",
     "perplexity": "sonar",
@@ -75,24 +81,6 @@ API_KEY_ENV: dict[str, str | None] = {
     "deepseek": "DEEPSEEK_API_KEY",
     "perplexity": "PERPLEXITY_API_KEY",
     "ollama": None,
-}
-
-#: USD per 1M tokens (input, output) — AS OF 2026-07-28; verify at each course release.
-#: Models missing from this table make ``estimate_cost`` return None (never a wrong number).
-MODEL_PRICES: dict[str, tuple[float, float]] = {
-    # current course-standard chat models
-    "gemini-3.6-flash": (1.50, 7.50),
-    "gpt-5.6-luna": (1.00, 6.00),
-    "claude-sonnet-5": (2.00, 10.00),  # intro pricing — 3.00/15.00 from Aug 2026
-    "meta-llama/Llama-4-Scout-17B-16E-Instruct": (0.08, 0.30),  # Together, approx.
-    # previous generation (still callable; kept so old notebook runs still price)
-    "gemini-2.5-flash": (0.30, 2.50),
-    "gpt-5": (1.25, 10.00),
-    "gpt-5-mini": (0.25, 2.00),
-    "claude-sonnet-4-6": (3.00, 15.00),
-    # embeddings
-    "text-embedding-3-small": (0.02, 0.0),
-    "gemini-embedding-001": (0.15, 0.0),
 }
 
 #: Keys setup_notebook() tries to load from Colab Secrets (quietly skipping absent ones).
@@ -203,6 +191,22 @@ def configure(
         (Decision 2) — except when ``provider="openai"``, which pairs with OpenAI
         embeddings so a single API key covers the whole notebook. Anthropic has no
         embeddings API, so Anthropic chat pairs with Gemini embeddings.
+
+    Args:
+        provider: Chat provider — "gemini", "openai", "anthropic", or an
+            OpenAI-compatible name ("together", "deepseek", "perplexity", "ollama").
+        chat_model: Model id; defaults to the provider's course-standard model.
+        embed_provider: Embedding provider; defaults to the chat provider, or to
+            Gemini when the chat provider has no embeddings API.
+        embed_model: Embedding model id; defaults to the provider's course standard.
+        base_url: OpenAI-compatible endpoint, for a provider not in the registry.
+        api_key: Key for this provider, overriding the environment variable.
+
+    Returns:
+        The resolved :class:`Config`, which is also stored as the module default.
+
+    Raises:
+        ValueError: The provider or embedding provider is not one this package knows.
     """
     global _config
     _config = _build(provider, chat_model, embed_provider, embed_model, base_url, api_key)
@@ -210,7 +214,11 @@ def configure(
 
 
 def get_config() -> Config:
-    """Return the current config, initialising course defaults (Gemini) on first use."""
+    """Return the current config, initialising course defaults (Gemini) on first use.
+
+    Returns:
+        The current :class:`Config`, initialising the Gemini defaults on first use.
+    """
     global _config
     if _config is None:
         _config = _build()
@@ -251,7 +259,11 @@ def resolve(
 
 
 def in_colab() -> bool:
-    """True when running inside Google Colab."""
+    """True when running inside Google Colab.
+
+    Returns:
+        ``True`` when ``google.colab`` is importable in this runtime.
+    """
     return "google.colab" in sys.modules
 
 
@@ -268,6 +280,16 @@ def setup_notebook(
 
     Returns ``True`` in Colab, ``False`` locally — the same ``IN_COLAB`` flag
     the notebooks use for their guarded install branches.
+
+    Args:
+        required_keys: Environment variables that must be present afterwards.
+        dotenv_path: Explicit ``.env`` path; defaults to the usual search.
+
+    Returns:
+        ``True`` when running inside Colab, ``False`` locally.
+
+    Raises:
+        ValueError: A key in ``required_keys`` is still missing after loading.
     """
     colab = in_colab()
     if colab:
@@ -293,7 +315,17 @@ def setup_notebook(
 
 
 def require_keys(*names: str) -> None:
-    """Fail fast (with a fix-it message) if any API key is missing from the env."""
+    """Fail fast (with a fix-it message) if any API key is missing from the env.
+
+    Args:
+        *names: Environment variable names that must be set and non-empty.
+
+    Returns:
+        ``None``.
+
+    Raises:
+        ValueError: Any named key is missing, with the list of what to set.
+    """
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         where = (

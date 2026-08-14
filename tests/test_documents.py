@@ -51,46 +51,6 @@ def test_load_csv_missing_column(tmp_path):
     assert "content" in str(err.value)
 
 
-def test_load_jsonl(tmp_path):
-    path = tmp_path / "kb.jsonl"
-    lines = [
-        {"id": "d1", "content": "Doc one.", "source": "blog"},
-        {"id": "d2", "content": "Doc two.", "source": "docs"},
-        {"id": "d3", "content": "   ", "source": "skip-me"},
-    ]
-    path.write_text("\n".join(json.dumps(o) for o in lines) + "\n\n")
-    docs = tai.load_jsonl(path)
-    assert [d.id for d in docs] == ["d1", "d2"]
-    assert docs[0].metadata == {"source": "blog"}
-
-
-def test_load_jsonl_bad_line(tmp_path):
-    path = tmp_path / "bad.jsonl"
-    path.write_text('{"content": "ok"}\nnot json\n')
-    with pytest.raises(TaiAitutorError) as err:
-        tai.load_jsonl(path)
-    assert "line 2" in str(err.value)
-
-
-def test_load_directory_and_files(tmp_path):
-    (tmp_path / "one.md").write_text("# Title\n\nBody text.")
-    (tmp_path / "two.txt").write_text("Plain text file.")
-    (tmp_path / "skip.bin").write_bytes(b"\x00\x01")
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    (sub / "three.md").write_text("Nested doc.")
-
-    docs = tai.load_directory(tmp_path, exts=(".md", ".txt"))
-    names = sorted(d.metadata["file_name"] for d in docs)
-    assert names == ["one.md", "three.md", "two.txt"]
-
-    flat = tai.load_directory(tmp_path, exts=(".md",), recursive=False)
-    assert [d.metadata["file_name"] for d in flat] == ["one.md"]
-
-    with pytest.raises(TaiAitutorError):
-        tai.load_directory(tmp_path / "missing")
-
-
 def test_load_directory_pdf(tmp_path):
     pytest.importorskip("pypdf")
     from pypdf import PdfWriter

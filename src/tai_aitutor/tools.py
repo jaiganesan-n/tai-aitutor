@@ -15,14 +15,13 @@ its signature, nothing more.
 from __future__ import annotations
 
 import inspect
-import json
 import os
 import typing
 from dataclasses import dataclass
 
 from .errors import MissingKeyError, ProviderNotInstalledError, TaiAitutorError
 
-__all__ = ["Tool", "tool", "make_retrieval_tool", "search_web", "render_tool_result"]
+__all__ = ["Tool", "tool", "search_web"]
 
 _TYPE_MAP = {
     str: "string",
@@ -48,7 +47,11 @@ class Tool:
 
 
 def _schema_from_signature(fn) -> dict:
-    """Derive the arguments JSON schema from type hints and defaults — visibly, no magic."""
+    """Derive the arguments JSON schema from type hints and defaults.
+
+    LlamaIndex asked for a ``ToolMetadata`` with a hand-written schema; here the
+    signature is the schema, read straight off the annotations and defaults.
+    """
     try:
         hints = typing.get_type_hints(fn)  # resolves "int" strings to int under PEP 563
     except Exception:
@@ -78,6 +81,19 @@ def tool(fn=None, *, name: str | None = None, description: str | None = None) ->
     ``description=`` or the docstring's first paragraph. Replaces
     ``QueryEngineTool.from_defaults(...)`` + ``ToolMetadata`` — the tool IS
     the function.
+
+    Args:
+        fn: The function to wrap, when used as a bare decorator.
+        name: Override the tool name; defaults to the function's name.
+        description: Override the description; defaults to the docstring's
+            first paragraph.
+
+    Returns:
+        A :class:`Tool`, or a decorator returning one.
+
+    Raises:
+        ValueError: The function has neither a docstring nor a ``description``
+            — the model chooses tools by their descriptions.
     """
 
     def wrap(func) -> Tool:
@@ -97,59 +113,9 @@ def tool(fn=None, *, name: str | None = None, description: str | None = None) ->
     return wrap(fn) if fn is not None else wrap
 
 
-def render_tool_result(value) -> str:
-    """Tool results travel to the model as text; non-strings become JSON."""
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False, default=str)
-    except TypeError:
-        return str(value)
-
-
 # --------------------------------------------------------------------------- #
 # The course's two standard tools
 # --------------------------------------------------------------------------- #
-
-
-def make_retrieval_tool(
-    collection,
-    top_k: int = 5,
-    name: str = "search_course_knowledge",
-    description: str = (
-        "Search the course knowledge base for passages relevant to a query. "
-        "Use this whenever the answer should come from the course material."
-    ),
-    retriever=None,
-) -> Tool:
-    """The retrieval pipeline as an agent tool (what the production agent calls
-    ``retrieve_tutor_context``).
-
-    ``retriever`` overrides the default dense search — pass the hybrid+rerank
-    chain to give the agent the production stack.
-    """
-    from .retrieval import search
-
-    def search_course_knowledge(query: str) -> str:
-        hits = retriever(query) if retriever else search(query, collection, top_k=top_k)
-        if not hits:
-            return "No relevant passages found."
-        blocks = []
-        for hit in hits:
-            title = hit.metadata.get("title") or hit.metadata.get("source") or hit.id
-            blocks.append(f"[{hit.rank}] {title}\n{hit.text}")
-        return "\n\n".join(blocks)
-
-    return Tool(
-        name=name,
-        description=description,
-        parameters={
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-        fn=search_course_knowledge,
-    )
 
 
 def _tavily_client(api_key: str | None = None):
@@ -172,6 +138,17 @@ def search_web(query: str, max_results: int = 5, api_key: str | None = None) -> 
 
     Use directly for grounded prompts, or hand it to the model as a tool:
     ``Chat(tools=[tool(search_web)])`` — the Web Search lesson does both.
+
+    Args:
+        query: The search query.
+        max_results: How many results to return.
+        api_key: Override ``TAVILY_API_KEY`` for this call.
+
+    Returns:
+        One dict per result with ``title``, ``url`` and ``content``.
+
+    Raises:
+        ValueError: ``tavily-python`` is not installed, or no API key is set.
     """
     response = _tavily_client(api_key).search(query=query, max_results=max_results)
     return [

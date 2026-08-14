@@ -24,21 +24,15 @@ budget; BM25 k1=1.5, b=0.75 with the code-aware tokenizer.
 
 from __future__ import annotations
 
-import gzip
-import json
 import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from . import config as _cfg
 from . import embeddings as _embeddings
 from . import llm as _llm
 from .chunking import Chunk
-from .errors import TaiAitutorError
-from .tokens import n_tokens
 
 __all__ = [
     "ScoredChunk",
@@ -47,14 +41,11 @@ __all__ = [
     "code_tokenize",
     "BM25Index",
     "rrf_fuse",
-    "hybrid_search",
     "rerank",
     "judge_rerank",
+    "rewrite_query",
     "hyde_search",
     "decompose_question",
-    "subquestion_answer",
-    "multi_step_answer",
-    "pack_context",
 ]
 
 
@@ -147,6 +138,18 @@ def search(
 
     The ``top_k`` you pass is the ``top_k`` you get (at most) — the old
     notebook bug where a stored cap was silently ignored cannot happen here.
+
+    Args:
+        query: The user's question.
+        collection: The Chroma collection to search.
+        top_k: How many hits to return.
+        where: Chroma metadata filter, applied before ranking.
+        where_document: Full-text filter, e.g. ``{"$contains": "BM25"}``.
+        embed_fn: Optional ``(texts, task) -> vectors`` replacing :func:`embed`.
+
+    Returns:
+        Up to ``top_k`` :class:`ScoredChunk` objects, best first, each carrying
+        its similarity score and 1-based rank.
     """
     if top_k <= 0:
         return []
@@ -163,6 +166,14 @@ def expand_window(hits: list[ScoredChunk], window_key: str = "window") -> list[S
     ``MetadataReplacementPostProcessor(target_metadata_key="window")`` — and the
     mechanism is exactly this visible: read ``metadata["window"]``, use it as
     the text.
+
+    Args:
+        hits: Retrieved hits whose chunks carry a stored window.
+        window_key: Metadata key holding the wider text.
+
+    Returns:
+        The same hits with the window swapped in as the text, preserving score
+        and rank. A hit without that key is passed through unchanged.
     """
     out: list[ScoredChunk] = []
     for hit in hits:
@@ -190,6 +201,14 @@ def code_tokenize(text: str) -> list[str]:
     ``"VectorStoreIndex"`` → ``vector, store, index``;
     ``"llama_index.core"`` → ``llama, index, core`` — so searches for either
     form match. Same tokenizer at index time and query time, always.
+
+    Args:
+        text: The text to tokenize.
+
+    Returns:
+        Lowercased tokens, with camelCase and dotted paths split apart so that
+        ``VectorStoreIndex`` and ``chromadb.PersistentClient`` are findable by
+        their parts as well as whole.
     """
     tokens: list[str] = []
     for raw in _WORD_RE.findall(text):
@@ -202,8 +221,6 @@ def code_tokenize(text: str) -> list[str]:
     return tokens
 
 
-_BM25_FORMAT = "tai-aitutor-bm25"
-_BM25_VERSION = 1
 
 
 class BM25Index:
@@ -277,39 +294,9 @@ class BM25Index:
             for position, (doc_index, score) in enumerate(ranked)
         ]
 
-    def save(self, path: str | Path) -> None:
-        """Versioned gzipped JSON — inspectable, diffable, never pickle."""
-        payload = {
-            "format": _BM25_FORMAT,
-            "version": _BM25_VERSION,
-            "k1": self.k1,
-            "b": self.b,
-            "docs": [
-                {"id": c.id, "text": c.text, "metadata": c.metadata} for c in self._chunks
-            ],
-        }
-        with gzip.open(path, "wt", encoding="utf-8") as f:
-            json.dump(payload, f)
-
-    @classmethod
-    def load(cls, path: str | Path) -> BM25Index:
-        with gzip.open(path, "rt", encoding="utf-8") as f:
-            payload = json.load(f)
-        if payload.get("format") != _BM25_FORMAT:
-            raise TaiAitutorError(f"{path} is not a tai-aitutor BM25 index file.")
-        if payload.get("version") != _BM25_VERSION:
-            raise TaiAitutorError(
-                f"BM25 index version {payload.get('version')} != {_BM25_VERSION} — rebuild it."
-            )
-        index = cls(k1=payload["k1"], b=payload["b"])
-        index.build(
-            [Chunk(id=d["id"], text=d["text"], metadata=d.get("metadata") or {}) for d in payload["docs"]]
-        )
-        return index
-
 
 # --------------------------------------------------------------------------- #
-# Fusion + hybrid (production: dense 15 ∪ BM25 30 → RRF k=60 keep 30)
+# Fusion (production: dense 15 ∪ BM25 30 → RRF k=60 keep 30)
 # --------------------------------------------------------------------------- #
 
 
@@ -320,6 +307,15 @@ def rrf_fuse(*ranked_lists: list[ScoredChunk], k: int = 60, keep: int = 30) -> l
     and unlike that merge, ``keep`` is actually applied (regression-tested).
     Positions in each list (1-based) are what count; input scores don't need
     to be comparable across lists (that's the point of RRF).
+
+    Args:
+        *ranked_lists: Two or more ranked hit lists to merge.
+        k: The RRF constant; larger values flatten the rank weighting.
+        keep: How many fused hits to return.
+
+    Returns:
+        The merged hits, best first, re-ranked from 1. A chunk seen in several
+        lists keeps its first-seen text and sums its contributions.
     """
     fused: dict[str, float] = {}
     first_seen: dict[str, ScoredChunk] = {}
@@ -333,60 +329,6 @@ def rrf_fuse(*ranked_lists: list[ScoredChunk], k: int = 60, keep: int = 30) -> l
         ScoredChunk(chunk=first_seen[chunk_id].chunk, score=score, rank=position + 1)
         for position, (chunk_id, score) in enumerate(ordered)
     ]
-
-
-def _matches_where(metadata: dict, where: dict | None) -> bool:
-    """Minimal matcher for the course filter shapes: {key: value | {$eq}| {$in}}."""
-    if not where:
-        return True
-    for key, condition in where.items():
-        value = metadata.get(key)
-        if isinstance(condition, dict):
-            if "$eq" in condition and value != condition["$eq"]:
-                return False
-            if "$in" in condition and value not in condition["$in"]:
-                return False
-        elif value != condition:
-            return False
-    return True
-
-
-def hybrid_search(
-    query: str,
-    collection,
-    bm25: BM25Index | None = None,
-    dense_top_k: int = 15,
-    bm25_top_k: int = 30,
-    keep: int = 30,
-    k: int = 60,
-    where: dict | None = None,
-    embed_fn=None,
-) -> list[ScoredChunk]:
-    """Dense ∪ BM25 → Reciprocal Rank Fusion, with the production constants.
-
-    Pass a prebuilt ``bm25`` index for repeated calls (build once:
-    ``BM25Index().build(get_all_chunks(collection))``); with ``bm25=None`` one
-    is built on the fly, which is fine at course scale but wasteful in a loop.
-    ``where`` scopes both legs (Chroma-side for dense; metadata match for BM25).
-    """
-    dense_hits = search(query, collection, top_k=dense_top_k, where=where, embed_fn=embed_fn)
-    if bm25 is None:
-        from .vectorstore import get_all_chunks  # local import: vectorstore ↔ retrieval
-
-        bm25 = BM25Index().build(get_all_chunks(collection))
-    keyword_hits = bm25.search(query, top_k=bm25_top_k)
-    if where is not None:
-        keyword_hits = [h for h in keyword_hits if _matches_where(h.metadata, where)]
-        keyword_hits = [
-            ScoredChunk(chunk=h.chunk, score=h.score, rank=i + 1)
-            for i, h in enumerate(keyword_hits)
-        ]
-    return rrf_fuse(dense_hits, keyword_hits, k=k, keep=keep)
-
-
-# --------------------------------------------------------------------------- #
-# Reranking (production: rerank-v4.0-fast, top 5, score floor 0.10)
-# --------------------------------------------------------------------------- #
 
 
 def rerank(
@@ -403,6 +345,21 @@ def rerank(
     skipped the way ``node_postprocessors`` on ``as_retriever`` was, so eval
     tables built on it measure what actually ran. Results below ``floor``
     relevance are dropped (production behaviour).
+
+    Args:
+        query: The user's question.
+        hits: Candidates to reorder — dense, BM25, or a fused list.
+        model: Cohere rerank model id.
+        top_n: How many hits to keep.
+        floor: Minimum relevance score; below it the model itself is calling the
+            chunk useless, so it is dropped.
+        api_key: Override ``COHERE_API_KEY`` for this call.
+
+    Returns:
+        Up to ``top_n`` hits carrying the reranker's scores, re-ranked from 1.
+
+    Raises:
+        ValueError: ``cohere`` is not installed, or no API key is set.
     """
     if not hits:
         return []
@@ -452,6 +409,17 @@ def judge_rerank(
 
     The concept lesson's framing stands: this teaches the idea; production uses
     a dedicated cross-encoder (:func:`rerank`).
+
+    Args:
+        query: The user's question.
+        hits: Candidates to reorder.
+        top_n: How many hits to keep.
+        model: Model id for the judging call.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        Up to ``top_n`` hits **in the judge's order**, carrying the judge's
+        scores and re-ranked from 1.
     """
     if not hits:
         return []
@@ -484,6 +452,46 @@ def judge_rerank(
 # --------------------------------------------------------------------------- #
 
 
+def rewrite_query(
+    question: str,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+) -> str:
+    """Turn a messy user question into one clean retrieval query.
+
+    The cheapest of the query transforms: one call, before embedding, so the
+    retriever never sees the noise. This is the workhorse in front of
+    user-facing chat.
+
+    >>> rewrite_query("hey quick q — whats that trick where u tune a huge model "
+    ...               "w/o retraining the whole thing?? lora smth?")
+    'low-rank adaptation LoRA parameter-efficient fine-tuning of large language models'
+
+    Args:
+        question: What the user actually typed — filler, typos and all.
+        model: Model id; defaults to the configured chat model.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        The rewritten query, stripped. Every distinct topic in the original is
+        kept, so a multi-part question stays multi-part (to split it, use
+        :func:`decompose_question` instead).
+
+    Raises:
+        ValueError: The provider is unknown.
+    """
+    rewritten = _llm.generate(
+        "Rewrite the user question below as one clean, specific search query "
+        "for a technical knowledge base about AI/ML. Keep every distinct topic "
+        "the user asked about. Return ONLY the rewritten query — no quotes, no "
+        f"explanation.\n\nUSER QUESTION:\n{question}",
+        model=model,
+        provider=provider,
+    )
+    return rewritten.strip()
+
+
 def hyde_search(
     query: str,
     collection,
@@ -505,6 +513,20 @@ def hyde_search(
     ``hypothetical=`` to inspect or reuse the generated passage (the lesson
     prints it — the failure mode where HyDE hallucinates the wrong topic is
     the teaching moment).
+
+    Args:
+        query: The user's question.
+        collection: The Chroma collection to search.
+        top_k: How many hits to return.
+        include_original: Average the real query's vector into the hypothetical's.
+        hypothetical: Supply your own passage instead of generating one.
+        where: Chroma metadata filter.
+        model: Model id for the hypothesising call.
+        provider: Override the configured provider for this call.
+        embed_fn: Optional ``(texts, task) -> vectors`` replacing :func:`embed`.
+
+    Returns:
+        Up to ``top_k`` :class:`ScoredChunk` objects, best first.
     """
     if hypothetical is None:
         hypothetical = _llm.generate(
@@ -536,6 +558,16 @@ def decompose_question(
 
     Replaces ``LLMQuestionGenerator``. A question that doesn't decompose comes
     back as itself — no machinery for the simple case.
+
+    Args:
+        question: A question that may cover several topics.
+        n_max: Cap on the number of sub-questions.
+        model: Model id for the decomposition call.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        Self-contained sub-questions. A question that does not decompose comes
+        back as a one-item list containing itself.
     """
     result = _llm.extract(
         f"Question: {question}\n\n"
@@ -551,197 +583,8 @@ def decompose_question(
     return questions or [question]
 
 
-def _merge_hits(*hit_lists: list[ScoredChunk]) -> list[ScoredChunk]:
-    """Dedupe hits by id (keep best score), order by score, re-rank."""
-    best: dict[str, ScoredChunk] = {}
-    for hits in hit_lists:
-        for hit in hits:
-            if hit.id not in best or hit.score > best[hit.id].score:
-                best[hit.id] = hit
-    ordered = sorted(best.values(), key=lambda hit: (-hit.score, hit.id))
-    return [
-        ScoredChunk(chunk=hit.chunk, score=hit.score, rank=position + 1)
-        for position, hit in enumerate(ordered)
-    ]
-
-
-def _retrieve_for(question, collection, top_k, where, retriever, embed_fn):
-    if retriever is not None:
-        return list(retriever(question))
-    if collection is None:
-        raise TaiAitutorError("Pass collection=... or retriever=... to retrieve context.")
-    return search(question, collection, top_k=top_k, where=where, embed_fn=embed_fn)
-
-
-def subquestion_answer(
-    question: str,
-    collection=None,
-    top_k: int = 5,
-    n_max: int = 4,
-    where: dict | None = None,
-    retriever=None,
-    *,
-    model: str | None = None,
-    provider: str | None = None,
-    embed_fn=None,
-):
-    """Decompose → retrieve per sub-question → answer each → synthesize.
-
-    The whole ``SubQuestionQueryEngine`` + ``QueryEngineTool`` + ``ToolMetadata``
-    stack as a visible loop. Returns an :class:`~tai_aitutor.synthesis.Answer`
-    whose sources are the merged (deduped) evidence across sub-questions.
-    """
-    from .prompts import RAG_SYSTEM
-    from .synthesis import Answer, build_rag_prompt
-
-    cfg = _cfg.resolve(provider=provider, chat_model=model)
-    sub_questions = decompose_question(question, n_max=n_max, model=model, provider=provider)
-
-    findings: list[tuple[str, str]] = []
-    all_hits: list[list[ScoredChunk]] = []
-    total_in = total_out = 0
-    for sub_question in sub_questions:
-        hits = _retrieve_for(sub_question, collection, top_k, where, retriever, embed_fn)
-        all_hits.append(hits)
-        text, usage = _llm._complete(
-            build_rag_prompt(sub_question, hits),
-            RAG_SYSTEM,
-            cfg=cfg,
-            temperature=None,
-            max_tokens=None,
-            reasoning_effort=None,
-        )
-        findings.append((sub_question, text))
-        total_in += usage.input_tokens
-        total_out += usage.output_tokens
-
-    joined = "\n\n".join(f"Sub-question: {q}\nAnswer: {a}" for q, a in findings)
-    final_text, usage = _llm._complete(
-        f"Original question: {question}\n\n{joined}\n\n"
-        "Write the final answer to the original question, synthesising the sub-answers.",
-        RAG_SYSTEM,
-        cfg=cfg,
-        temperature=None,
-        max_tokens=None,
-        reasoning_effort=None,
-    )
-    total_in += usage.input_tokens
-    total_out += usage.output_tokens
-    return Answer(
-        text=final_text,
-        sources=_merge_hits(*all_hits),
-        usage=_llm.Usage(total_in, total_out),
-    )
-
-
-class _NextStep(BaseModel):
-    done: bool = Field(description="True when enough is known to answer the original question.")
-    next_question: str = Field(
-        default="", description="The next follow-up question to retrieve for (empty when done)."
-    )
-
-
-def multi_step_answer(
-    question: str,
-    collection=None,
-    max_steps: int = 3,
-    top_k: int = 5,
-    where: dict | None = None,
-    retriever=None,
-    *,
-    model: str | None = None,
-    provider: str | None = None,
-    embed_fn=None,
-):
-    """Iterative retrieval: ask → retrieve → decide the next question → repeat.
-
-    Replaces ``MultiStepQueryEngine`` + ``StepDecomposeQueryTransform`` with a
-    plain loop: each step, a typed call decides whether enough is known or what
-    to look up next (starting from the original question). Bounded by
-    ``max_steps`` — the modern form of this technique is an agent rewriting its
-    own retrieval query per tool call, which Section 13 shows.
-    """
-    from .prompts import RAG_SYSTEM
-    from .synthesis import Answer, build_rag_prompt
-
-    cfg = _cfg.resolve(provider=provider, chat_model=model)
-    findings: list[tuple[str, str]] = []
-    all_hits: list[list[ScoredChunk]] = []
-    total_in = total_out = 0
-    current_question = question
-
-    for _step in range(max_steps):
-        hits = _retrieve_for(current_question, collection, top_k, where, retriever, embed_fn)
-        all_hits.append(hits)
-        text, usage = _llm._complete(
-            build_rag_prompt(current_question, hits),
-            RAG_SYSTEM,
-            cfg=cfg,
-            temperature=None,
-            max_tokens=None,
-            reasoning_effort=None,
-        )
-        findings.append((current_question, text))
-        total_in += usage.input_tokens
-        total_out += usage.output_tokens
-
-        known = "\n\n".join(f"Q: {q}\nA: {a}" for q, a in findings)
-        step = _llm.extract(
-            f"Original question: {question}\n\nKnown so far:\n{known}\n\n"
-            "Is this enough to answer the original question? If not, what single "
-            "follow-up question should be retrieved next?",
-            _NextStep,
-            system="You plan retrieval steps for answering a question.",
-            model=model,
-            provider=provider,
-        )
-        if step.done or not step.next_question.strip():
-            break
-        current_question = step.next_question.strip()
-
-    joined = "\n\n".join(f"Q: {q}\nA: {a}" for q, a in findings)
-    final_text, usage = _llm._complete(
-        f"Original question: {question}\n\nGathered:\n{joined}\n\n"
-        "Write the final answer to the original question.",
-        RAG_SYSTEM,
-        cfg=cfg,
-        temperature=None,
-        max_tokens=None,
-        reasoning_effort=None,
-    )
-    total_in += usage.input_tokens
-    total_out += usage.output_tokens
-    return Answer(
-        text=final_text,
-        sources=_merge_hits(*all_hits),
-        usage=_llm.Usage(total_in, total_out),
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Token budget (production: 100k on retrieval payloads — a real cost knob)
 # --------------------------------------------------------------------------- #
 
 
-def pack_context(
-    hits: list[ScoredChunk],
-    max_tokens: int = 100_000,
-    model: str | None = None,
-) -> list[ScoredChunk]:
-    """Keep whole hits, in order, until the token budget is spent.
-
-    The production budget knob: retrieval payloads dominate input tokens, and
-    the evals found a 30k budget matched the 100k budget's recall — so this
-    argument is where cost goes to be cut. Chunks are never truncated mid-way;
-    the first one that doesn't fit is dropped along with everything after it
-    counts against nothing.
-    """
-    kept: list[ScoredChunk] = []
-    spent = 0
-    for hit in hits:
-        cost = n_tokens(hit.text, model=model)
-        if spent + cost > max_tokens:
-            continue
-        spent += cost
-        kept.append(ScoredChunk(chunk=hit.chunk, score=hit.score, rank=len(kept) + 1))
-    return kept

@@ -63,6 +63,7 @@ class FakeAnthropicMessages:
     def __init__(self, blocks=None):
         self.calls = []
         self._blocks = blocks
+        self._parsed = None
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -71,6 +72,12 @@ class FakeAnthropicMessages:
             content=blocks,
             usage=SimpleNamespace(input_tokens=6, output_tokens=4),
         )
+
+    def parse(self, **kwargs):
+        """Mirrors client.messages.parse(..., output_format=Schema) -> .parsed_output."""
+        self.calls.append(kwargs)
+        schema = kwargs["output_format"]
+        return SimpleNamespace(parsed_output=schema.model_validate(self._parsed or {}))
 
 
 @pytest.fixture
@@ -95,7 +102,7 @@ def test_generate_gemini_default(fake_clients):
     out = tai.generate("hello", system="be brief")
     assert out == "gemini says hi"
     call = fake_clients.gemini.models.calls[0]
-    assert call["model"] == "gemini-3.6-flash"
+    assert call["model"] == "gemini-3.5-flash-lite"
     assert call["config"].system_instruction == "be brief"
 
 
@@ -115,7 +122,7 @@ def test_generate_anthropic_sets_required_max_tokens(fake_clients):
     out = tai.generate("hello")
     assert out == "claude says hi"
     call = fake_clients.anthropic.messages.calls[0]
-    assert call["model"] == "claude-sonnet-5"
+    assert call["model"] == "claude-haiku-4-5"
     assert call["max_tokens"] == 4096  # Anthropic requires it; we default it
     assert "system" not in call  # not passed when None
 
@@ -172,34 +179,15 @@ def test_extract_openai_parse(fake_clients):
     assert result.answer == "parsed"
 
 
-def test_extract_gemini_falls_back_to_json_text(fake_clients, monkeypatch):
-    tai.configure(provider="gemini")
-
-    def generate_content(**kwargs):
-        return SimpleNamespace(text='```json\n{"answer": "from-json", "score": 0.5}\n```', parsed=None)
-
-    monkeypatch.setattr(fake_clients.gemini.models, "generate_content", generate_content)
-    result = tai.extract("judge this", Verdict)
-    assert result.answer == "from-json"
-
-
-def test_extract_anthropic_tool_use(monkeypatch, fake_clients):
-    blocks = [SimpleNamespace(type="tool_use", input={"answer": "via-tool", "score": 0.9})]
-    fake_clients.anthropic.messages._blocks = blocks
+def test_extract_anthropic_uses_messages_parse(monkeypatch, fake_clients):
+    """Fix 3: the official high-level path, not the forced-tool-call workaround."""
+    fake_clients.anthropic.messages._parsed = {"answer": "via-parse", "score": 0.9}
     tai.configure(provider="anthropic")
     result = tai.extract("judge this", Verdict)
-    assert result.answer == "via-tool"
+    assert result.answer == "via-parse"
     call = fake_clients.anthropic.messages.calls[0]
-    assert call["tool_choice"] == {"type": "tool", "name": "emit_result"}
-
-
-def test_extract_compat_json_fallback(monkeypatch, fake_clients):
-    tai.configure(provider="deepseek")
-    monkeypatch.setattr(
-        llm, "generate", lambda *a, **k: 'Here you go: {"answer": "compat", "score": 1.0}'
-    )
-    result = tai.extract("judge this", Verdict)
-    assert result.answer == "compat"
+    assert call["output_format"] is Verdict
+    assert "tools" not in call and "tool_choice" not in call
 
 
 def test_extract_compat_repair_retry_then_error(monkeypatch, fake_clients):
@@ -214,18 +202,3 @@ def test_extract_compat_repair_retry_then_error(monkeypatch, fake_clients):
 # --------------------------------------------------------------------------- #
 
 
-def test_ask_batch_preserves_order(monkeypatch):
-    monkeypatch.setattr(llm, "generate", lambda p, s=None, **k: f"answer:{p}")
-    out = tai.ask_batch([f"q{i}" for i in range(20)], concurrency=5)
-    assert out == [f"answer:q{i}" for i in range(20)]
-
-
-def test_ask_batch_propagates_errors(monkeypatch):
-    def boom(p, s=None, **k):
-        if p == "q3":
-            raise RuntimeError("provider down")
-        return "ok"
-
-    monkeypatch.setattr(llm, "generate", boom)
-    with pytest.raises(RuntimeError):
-        tai.ask_batch([f"q{i}" for i in range(5)])

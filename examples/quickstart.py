@@ -1,39 +1,64 @@
-"""The whole course pipeline, end to end.
+"""Quickstart: load a CSV, index it, retrieve, and answer — end to end.
 
-Data policy: DOWNLOADS LIVE IN YOUR NOTEBOOK/SCRIPT, not in the package —
-you decide where datasets are hosted and cached; the package only loads
-whatever file you hand it (`load_csv` / `load_jsonl` / `load_directory`).
+Every step is a call you can read. The package ships no dataset URLs, so the
+download stays here in the example (and, in the course, in the notebook).
 
-Needs: pip install "tai-aitutor[gemini,rag]" and GOOGLE_API_KEY in .env.
+Run:
+    pip install "tai-aitutor[gemini,rag]"
+    python examples/quickstart.py
 """
+
+from __future__ import annotations
 
 import urllib.request
 from pathlib import Path
 
 from tai_aitutor import (
-    answer,
+    build_rag_prompt,
+    chunk_document,
     configure,
+    embed,
+    generate,
     get_collection,
-    ingest,
     load_csv,
-    setup_notebook,
+    search,
     show_answer,
 )
 
-setup_notebook(required_keys=("GOOGLE_API_KEY",))
+CSV_URL = (
+    "https://raw.githubusercontent.com/AlaFalaki/tutorial_notebooks/main/data/"
+    "mini-llama-articles.csv"
+)
+CSV_PATH = Path("mini-llama-articles.csv")
+
+# 1. Configure the provider
 configure(provider="gemini")
 
-# 1. Download the course dataset (explicit — swap this URL when the data moves)
-DATA_URL = "https://raw.githubusercontent.com/AlaFalaki/tutorial_notebooks/main/data/mini-llama-articles.csv"
-csv_path = Path("mini-llama-articles.csv")
-if not csv_path.exists():
-    urllib.request.urlretrieve(DATA_URL, csv_path)
+# 2. Download the data (the notebook does this too — the package never fetches)
+if not CSV_PATH.exists():
+    urllib.request.urlretrieve(CSV_URL, CSV_PATH)  # noqa: S310
 
-# 2. Load → ingest → answer
-docs = load_csv(csv_path, text_col="content", meta_cols=("title", "url", "source"),
-                id_col="title")
-col = get_collection("mini_articles", path="./db")
-if col.count() == 0:
-    print(ingest(docs, col, chunk_size=512, chunk_overlap=128))
+docs = load_csv(
+    CSV_PATH, text_col="content", meta_cols=("title", "url", "source"), id_col="title"
+)
 
-show_answer(answer("What is the difference between RAG and fine-tuning?", col, top_k=5))
+# 3. chunk -> embed -> upsert, the three visible steps
+col = get_collection("quickstart", path="./quickstart-db")
+chunks = [c for d in docs for c in chunk_document(d, chunk_size=512, chunk_overlap=128)]
+
+BATCH_SIZE = 50
+for start in range(0, len(chunks), BATCH_SIZE):
+    batch = chunks[start : start + BATCH_SIZE]
+    col.add(
+        ids=[c.id for c in batch],
+        documents=[c.text for c in batch],
+        embeddings=embed([c.text for c in batch], task="document"),
+        metadatas=[c.metadata for c in batch],
+    )
+print(f"indexed {len(chunks)} chunks")
+
+# 4. retrieve -> prompt -> generate
+question = "What is the difference between RAG and fine-tuning?"
+hits = search(question, col, top_k=5)
+reply = generate(build_rag_prompt(question, hits))
+show_answer(reply, hits)

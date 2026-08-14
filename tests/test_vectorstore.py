@@ -44,32 +44,8 @@ def collection():
     vectorstore._reset_clients()
 
 
-def test_ingest_and_stats(collection):
-    stats = tai.ingest(DOCS, collection, chunk_size=64, chunk_overlap=8, embed_fn=fake_embed, show_progress=False)
-    assert stats.documents == 3
-    assert stats.chunks >= 3
-    assert stats.collection == "test_kb"
-    assert collection.count() == stats.chunks
-
-
-def test_ingest_accepts_strings_and_prebuilt_chunks(collection):
-    chunks = [tai.Chunk(id="c1", text="space suit", metadata={"k": ["a", "b"], "n": None})]
-    stats = tai.ingest(["plain python string doc"] + chunks, collection, embed_fn=fake_embed, show_progress=False)
-    assert stats.chunks == 2
-    got = collection.get(ids=["c1"], include=["metadatas"])
-    # metadata sanitised: list joined, None dropped
-    assert got["metadatas"][0] == {"k": "a, b"}
-
-
-def test_ingest_respects_precomputed_embeddings(collection):
-    chunk = tai.Chunk(id="pre", text="whatever", embedding=[1.0, 0.0, 0.0])
-    tai.ingest([chunk], collection, embed_fn=fake_embed, show_progress=False)
-    hits = tai.search("python python", collection, top_k=1, embed_fn=fake_embed)
-    assert hits[0].id == "pre"  # matched via the precomputed vector, not the text
-
-
-def test_search_ranks_by_topic(collection):
-    tai.ingest(DOCS, collection, chunk_size=64, chunk_overlap=8, embed_fn=fake_embed, show_progress=False)
+def test_search_ranks_by_topic(collection, add_chunks):
+    add_chunks(DOCS, collection, fake_embed, chunk_size=64, chunk_overlap=8)
     hits = tai.search("how do I use python typing", collection, top_k=3, embed_fn=fake_embed)
     assert hits[0].metadata["title"] == "Python Tricks"
     assert hits[0].rank == 1 and hits[1].rank == 2
@@ -77,31 +53,31 @@ def test_search_ranks_by_topic(collection):
     assert 0.0 <= hits[0].score <= 1.0 + 1e-6
 
 
-def test_search_where_filter_scopes_sources(collection):
-    tai.ingest(DOCS, collection, chunk_size=64, chunk_overlap=8, embed_fn=fake_embed, show_progress=False)
+def test_search_where_filter_scopes_sources(collection, add_chunks):
+    add_chunks(DOCS, collection, fake_embed, chunk_size=64, chunk_overlap=8)
     where = tai.build_where_filter("food_blog")
     hits = tai.search("cooking", collection, top_k=5, where=where, embed_fn=fake_embed)
     assert hits and all(h.metadata["source"] == "food_blog" for h in hits)
 
 
-def test_search_top_k_respected(collection):
+def test_search_top_k_respected(collection, add_chunks):
     """Regression: the requested cap is actually applied (old hybrid bug class)."""
-    tai.ingest(DOCS, collection, chunk_size=32, chunk_overlap=4, embed_fn=fake_embed, show_progress=False)
+    add_chunks(DOCS, collection, fake_embed, chunk_size=32, chunk_overlap=4)
     assert collection.count() > 2
     hits = tai.search("python space cooking", collection, top_k=2, embed_fn=fake_embed)
     assert len(hits) == 2
     assert tai.search("x", collection, top_k=0, embed_fn=fake_embed) == []
 
 
-def test_get_all_chunks_enumerates_everything(collection):
-    tai.ingest(DOCS, collection, chunk_size=32, chunk_overlap=4, embed_fn=fake_embed, show_progress=False)
+def test_get_all_chunks_enumerates_everything(collection, add_chunks):
+    add_chunks(DOCS, collection, fake_embed, chunk_size=32, chunk_overlap=4)
     everything = tai.get_all_chunks(collection, page_size=2)  # force pagination
     assert len(everything) == collection.count()
     assert all(c.text for c in everything)
     assert any(c.metadata.get("source") == "tai_blog" for c in everything)
 
 
-def test_build_where_filter_shapes():
+def test_build_where_filter_shapes(add_chunks):
     assert tai.build_where_filter(None) is None
     assert tai.build_where_filter([]) is None
     assert tai.build_where_filter("tai_blog") == {"source": {"$eq": "tai_blog"}}
@@ -110,8 +86,8 @@ def test_build_where_filter_shapes():
     assert tai.build_where_filter(["a", "b"], key="topic") == {"topic": {"$in": ["a", "b"]}}
 
 
-def test_reset_collection_clears(collection):
-    tai.ingest(DOCS, collection, embed_fn=fake_embed, show_progress=False)
+def test_reset_collection_clears(collection, add_chunks):
+    add_chunks(DOCS, collection, fake_embed)
     assert collection.count() > 0
     fresh = tai.reset_collection("test_kb")
     assert fresh.count() == 0

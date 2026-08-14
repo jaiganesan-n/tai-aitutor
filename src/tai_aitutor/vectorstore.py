@@ -15,18 +15,12 @@ scope retrieval to a student's selected sources (``$eq`` / ``$in``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from . import embeddings as _embeddings
-from .chunking import Chunk, chunk_document
-from .documents import Document
+from .chunking import Chunk
 from .errors import ProviderNotInstalledError
 
 __all__ = [
     "get_collection",
     "reset_collection",
-    "ingest",
-    "IngestStats",
     "get_all_chunks",
     "build_where_filter",
 ]
@@ -59,6 +53,16 @@ def get_collection(name: str, path: str | None = None):
     ``path=None`` → in-memory (gone when the runtime restarts);
     ``path="./db"`` → persisted on disk. That one argument is the whole
     "storage context" story.
+
+    Args:
+        name: Collection name.
+        path: Directory for an on-disk store, or ``None`` for in-memory.
+
+    Returns:
+        The Chroma collection, created if absent, using cosine distance.
+
+    Raises:
+        ValueError: ``chromadb`` is not installed.
     """
     return _client(path).get_or_create_collection(
         name=name, metadata={"hnsw:space": "cosine"}
@@ -66,7 +70,15 @@ def get_collection(name: str, path: str | None = None):
 
 
 def reset_collection(name: str, path: str | None = None):
-    """Delete-and-recreate a collection (idempotent re-runs of ingest cells)."""
+    """Delete-and-recreate a collection (idempotent re-runs of ingest cells).
+
+    Args:
+        name: Collection name.
+        path: Directory for an on-disk store, or ``None`` for in-memory.
+
+    Returns:
+        A new, empty collection at the same name and path.
+    """
     client = _client(path)
     try:
         client.delete_collection(name)
@@ -85,107 +97,6 @@ def _reset_clients() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class IngestStats:
-    """What one ingest() call did."""
-
-    documents: int
-    chunks: int
-    collection: str
-
-    def __repr__(self) -> str:
-        return (
-            f"IngestStats({self.documents} documents → {self.chunks} chunks "
-            f"→ collection {self.collection!r})"
-        )
-
-
-def _sanitize_metadata(metadata: dict) -> dict | None:
-    """Chroma metadata values must be str/int/float/bool — flatten the rest."""
-    out: dict = {}
-    for key, value in metadata.items():
-        if value is None:
-            continue
-        if isinstance(value, (str, int, float, bool)):
-            out[key] = value
-        elif isinstance(value, (list, tuple)):
-            out[key] = ", ".join(map(str, value))
-        else:
-            out[key] = str(value)
-    return out or None
-
-
-def ingest(
-    docs,
-    collection,
-    chunker=None,
-    chunk_size: int = 512,
-    chunk_overlap: int = 128,
-    enrich=(),
-    embed_fn=None,
-    batch_size: int = 64,
-    show_progress: bool = True,
-) -> IngestStats:
-    """Chunk → (enrich) → embed → upsert. The visible ingestion loop.
-
-    Parameters
-    ----------
-    docs:
-        ``Document`` objects, plain strings, or ready-made ``Chunk`` lists.
-    chunker:
-        Optional ``text -> list[str]`` override (e.g.
-        ``heading_aware_markdown_chunks``); default is token chunking with
-        ``chunk_size``/``chunk_overlap``.
-    enrich:
-        Callables ``list[Chunk] -> list[Chunk]`` applied before embedding —
-        the extractors module plugs in here (keywords, summaries, questions).
-    embed_fn:
-        ``(texts, task=...) -> vectors`` override; default is the configured
-        :func:`tai_aitutor.embed`.
-    """
-    docs = list(docs)
-
-    # 1. Chunk
-    chunks: list[Chunk] = []
-    n_docs = 0
-    for doc in docs:
-        if isinstance(doc, Chunk):
-            chunks.append(doc)
-            continue
-        n_docs += 1
-        if isinstance(doc, str):
-            doc = Document(text=doc)
-        chunks.extend(chunk_document(doc, chunk_size, chunk_overlap, chunker=chunker))
-
-    # 2. Enrich (metadata extractors)
-    for enrich_fn in enrich:
-        chunks = enrich_fn(chunks)
-
-    # 3 + 4. Embed and upsert, batch by batch
-    embed_fn = embed_fn or _embeddings.embed
-    batches = range(0, len(chunks), batch_size)
-    if show_progress and len(chunks) > batch_size:
-        from tqdm.auto import tqdm
-
-        batches = tqdm(batches, desc=f"ingest → {collection.name}", unit="batch")
-
-    for start in batches:
-        batch = chunks[start : start + batch_size]
-        texts = [c.text for c in batch]
-        vectors = [
-            c.embedding if c.embedding is not None else vec
-            for c, vec in zip(batch, embed_fn(texts, task="document"))
-        ]
-        collection.upsert(
-            ids=[c.id for c in batch],
-            documents=texts,
-            embeddings=vectors,
-            metadatas=[_sanitize_metadata(c.metadata) for c in batch],
-        )
-
-    return IngestStats(documents=n_docs, chunks=len(chunks), collection=collection.name)
-
-
 # --------------------------------------------------------------------------- #
 # Enumeration and filters
 # --------------------------------------------------------------------------- #
@@ -197,6 +108,14 @@ def get_all_chunks(collection, page_size: int = 500) -> list[Chunk]:
     Replaces the old notebook hack of running a dummy query with
     ``similarity_top_k=100_000_000`` — the enumeration path BM25 indexing
     (Hybrid Search lesson) builds on.
+
+    Args:
+        collection: The Chroma collection to enumerate.
+        page_size: Rows fetched per request.
+
+    Returns:
+        Every stored chunk, as :class:`Chunk` objects. This is the real
+        enumeration path — no ``top_k=100000000`` hack.
     """
     out: list[Chunk] = []
     offset = 0
@@ -223,6 +142,15 @@ def build_where_filter(sources, key: str = "source") -> dict | None:
     >>> build_where_filter(None)                      # no filter
     >>> build_where_filter("tai_blog")                # {'source': {'$eq': 'tai_blog'}}
     >>> build_where_filter(["tai_blog", "hf_docs"])   # {'source': {'$in': [...]}}
+
+    Args:
+        sources: The selected metadata values.
+        key: The metadata key to filter on.
+
+    Returns:
+        ``None`` for an empty selection (search everything), ``{key: {"$eq": v}}``
+        for one value, ``{key: {"$in": [...]}}`` for several — the shapes
+        production sends.
     """
     if sources is None:
         return None

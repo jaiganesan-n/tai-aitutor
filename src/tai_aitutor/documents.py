@@ -24,16 +24,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .errors import ProviderNotInstalledError, TaiAitutorError
+from .errors import TaiAitutorError
 
 __all__ = [
     "Document",
     "load_csv",
-    "load_jsonl",
-    "load_directory",
-    "load_files",
-    "load_wikipedia",
-    "load_hf_dataset",
 ]
 
 
@@ -97,6 +92,22 @@ def load_csv(
     get a ``~2``, ``~3``… suffix so chunk ids can never collide across
     documents. Stable, readable ids are what keep saved eval datasets and
     existing collections lined up across re-ingests.
+
+    Args:
+        path_or_url: Local path or ``http(s)://`` URL of the CSV.
+        text_col: Column holding the document body.
+        meta_cols: Columns to carry through as metadata.
+        embedding_col: Column holding a JSON list of floats, if the CSV is a
+            pre-embedded checkpoint. Parsed with ``json.loads``, never ``eval``.
+        id_col: Column to derive the document id from; falls back to a stable
+            hash of the text.
+        id_max_chars: Cap on a derived id's length.
+
+    Returns:
+        One :class:`Document` per row, in file order.
+
+    Raises:
+        ValueError: ``text_col`` is not a column in the file.
     """
     csv.field_size_limit(sys.maxsize)  # course articles exceed the default field cap
     raw = _read_text(path_or_url)
@@ -137,32 +148,6 @@ def load_csv(
     return docs
 
 
-def load_jsonl(
-    path_or_url: str | Path,
-    text_key: str = "content",
-    id_key: str = "id",
-) -> list[Document]:
-    """Load a JSON-Lines file (one object per line) into Documents.
-
-    ``text_key`` becomes the document text; every other field goes to metadata.
-    """
-    docs: list[Document] = []
-    for line_no, line in enumerate(_read_text(path_or_url).splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise TaiAitutorError(f"Invalid JSON on line {line_no}: {line[:80]!r}") from exc
-        text = str(obj.get(text_key) or "").strip()
-        if not text:
-            continue
-        metadata = {k: v for k, v in obj.items() if k not in (text_key, id_key)}
-        docs.append(Document(text=text, metadata=metadata, id=obj.get(id_key)))
-    return docs
-
-
 # --------------------------------------------------------------------------- #
 # Files and directories (replaces SimpleDirectoryReader)
 # --------------------------------------------------------------------------- #
@@ -170,109 +155,8 @@ def load_jsonl(
 _TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".html", ".py", ".json", ".csv"}
 
 
-def load_files(paths: list[str | Path]) -> list[Document]:
-    """Load specific files into Documents (text-like files plus .pdf via pypdf)."""
-    docs: list[Document] = []
-    for p in map(Path, paths):
-        suffix = p.suffix.lower()
-        if suffix == ".pdf":
-            text = _pdf_text(p)
-        elif suffix in _TEXT_EXTS:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        else:
-            continue  # silently skip binary/unknown types, like the lesson does
-        if text.strip():
-            docs.append(
-                Document(text=text, metadata={"file_name": p.name, "file_path": str(p)})
-            )
-    return docs
-
-
-def load_directory(
-    path: str | Path,
-    exts: tuple[str, ...] = (".txt", ".md", ".pdf"),
-    recursive: bool = True,
-) -> list[Document]:
-    """Load every matching file under a directory (replaces ``SimpleDirectoryReader``)."""
-    root = Path(path)
-    if not root.is_dir():
-        raise TaiAitutorError(f"{root} is not a directory.")
-    pattern = "**/*" if recursive else "*"
-    files = sorted(p for p in root.glob(pattern) if p.is_file() and p.suffix.lower() in exts)
-    return load_files(files)
-
-
-def _pdf_text(path: Path) -> str:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise ProviderNotInstalledError(
-            "pypdf is not installed (needed for .pdf files). "
-            "Run: pip install 'tai-aitutor[parse]'"
-        ) from exc
-    reader = PdfReader(str(path))
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages)
-
-
 # --------------------------------------------------------------------------- #
 # Wikipedia (replaces WikipediaReader) and HF datasets
 # --------------------------------------------------------------------------- #
 
 
-def load_wikipedia(titles: list[str], lang: str = "en") -> list[Document]:
-    """Fetch Wikipedia pages as Documents (router lesson's knowledge source)."""
-    try:
-        import wikipedia
-    except ImportError as exc:
-        raise ProviderNotInstalledError(
-            "The wikipedia package is not installed. Run: pip install 'tai-aitutor[web]'"
-        ) from exc
-    wikipedia.set_lang(lang)
-    docs = []
-    for title in titles:
-        page = wikipedia.page(title, auto_suggest=False)
-        docs.append(
-            Document(
-                text=page.content,
-                metadata={"title": page.title, "url": page.url, "source": "wikipedia"},
-                id=f"wikipedia-{page.pageid}",
-            )
-        )
-    return docs
-
-
-def load_hf_dataset(
-    repo_id: str,
-    filename: str,
-    text_key: str = "content",
-    repo_type: str = "dataset",
-) -> list[Document]:
-    """Download one file from a Hugging Face dataset repo and load it.
-
-    Dispatches on extension: ``.jsonl`` → :func:`load_jsonl`; ``.csv`` needs an
-    explicit follow-up call to :func:`load_csv` (column names vary), so it
-    returns the downloaded path inside the raised message instead of guessing.
-    """
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise ProviderNotInstalledError(
-            "huggingface-hub is not installed. Run: pip install 'tai-aitutor[data]'"
-        ) from exc
-    local = hf_hub_download(repo_id=repo_id, filename=filename, repo_type=repo_type)
-    if filename.lower().endswith(".jsonl"):
-        return load_jsonl(local, text_key=text_key)
-    if filename.lower().endswith(".json"):
-        data = json.loads(Path(local).read_text(encoding="utf-8"))
-        return [
-            Document(
-                text=str(obj.get(text_key, "")),
-                metadata={k: v for k, v in obj.items() if k != text_key},
-            )
-            for obj in data
-            if str(obj.get(text_key, "")).strip()
-        ]
-    raise TaiAitutorError(
-        f"Downloaded {local} — load CSVs explicitly with "
-        f"load_csv({local!r}, text_col=..., meta_cols=...) so column names are visible."
-    )

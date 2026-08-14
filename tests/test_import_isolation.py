@@ -64,11 +64,5 @@ def test_calls_raise_friendly_extras_errors(no_optional_sdks):
     assert "tai-aitutor[rerank]" in str(err.value)
 
     with pytest.raises(ProviderNotInstalledError) as err:
-        tai.embed_local("text")
+        tai.embed_local("text", "BAAI/bge-small-en-v1.5")
     assert "tai-aitutor[local]" in str(err.value)
-
-    with pytest.raises(ProviderNotInstalledError) as err:
-        tai.train_embedder(
-            tai.QADataset(queries={"q": "?"}, corpus={"c": "t"}, relevant_docs={"q": ["c"]})
-        )
-    assert "tai-aitutor[finetune]" in str(err.value)

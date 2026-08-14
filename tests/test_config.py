@@ -10,7 +10,7 @@ from tai_aitutor.errors import MissingKeyError, UnsupportedProviderError
 def test_defaults_are_gemini():
     c = tai.get_config()
     assert c.provider == "gemini"
-    assert c.chat_model == "gemini-3.6-flash"
+    assert c.chat_model == "gemini-3.5-flash-lite"
     assert c.embed_provider == "gemini"
     assert c.embed_model == "gemini-embedding-001"
 
@@ -24,7 +24,7 @@ def test_openai_pairs_with_openai_embeddings():
 
 def test_anthropic_pairs_with_gemini_embeddings():
     c = tai.configure(provider="anthropic")
-    assert c.chat_model == "claude-sonnet-5"
+    assert c.chat_model == "claude-haiku-4-5"
     assert c.embed_provider == "gemini"  # Decision 2: Anthropic has no embeddings API
 
 

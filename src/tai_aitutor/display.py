@@ -7,7 +7,6 @@ markdown in notebooks and plain text elsewhere.
 from __future__ import annotations
 
 from .retrieval import ScoredChunk
-from .synthesis import Answer
 
 __all__ = ["show_chunks", "show_answer", "show_eval_table"]
 
@@ -33,7 +32,15 @@ def _label(metadata: dict, fallback: str) -> str:
 
 
 def show_chunks(hits: list[ScoredChunk], max_chars: int = 300) -> None:
-    """Readable listing of retrieval hits: rank, score, source, preview."""
+    """Readable listing of retrieval hits: rank, score, source, preview.
+
+    Args:
+        hits: The retrieval hits to display.
+        max_chars: How much of each chunk to preview.
+
+    Returns:
+        ``None`` — this writes to the notebook (or stdout), it does not compute.
+    """
     lines = []
     for hit in hits:
         metadata = hit.metadata or {}
@@ -57,6 +64,13 @@ def show_eval_table(reports: dict, extra_columns: dict | None = None) -> None:
             "avg ctx tokens": {label: f"{r.avg_context_tokens(qa):.0f}"
                                for label, r in reports.items()},
         })
+
+    Args:
+        reports: Row label to :class:`RetrievalReport`.
+        extra_columns: ``{column_name: {row_label: value}}`` for extra columns.
+
+    Returns:
+        ``None`` — this writes to the notebook (or stdout), it does not compute.
     """
     extra_columns = extra_columns or {}
     header = ["configuration", "hit rate", "MRR", "top_k", "queries", *extra_columns]
@@ -79,12 +93,26 @@ def show_eval_table(reports: dict, extra_columns: dict | None = None) -> None:
     _render("\n".join(lines))
 
 
-def show_answer(ans: Answer, show_sources: bool = True, max_chars: int = 160) -> None:
-    """The answer, then its sources — the two things worth seeing after answer()."""
-    parts = [ans.text]
-    if show_sources and ans.sources:
+def show_answer(
+    reply: str,
+    retrieved: list[ScoredChunk] | None = None,
+    max_chars: int = 160,
+) -> None:
+    """Print an answer followed by the chunks that grounded it.
+
+    Args:
+        reply: The generated answer text.
+        retrieved: The hits the answer was built from, or ``None`` to print the
+            answer alone.
+        max_chars: How much of each source chunk to preview.
+
+    Returns:
+        ``None`` — this writes to the notebook (or stdout), it does not compute.
+    """
+    parts = [reply]
+    if retrieved:
         parts.append("\n**Sources**\n")
-        for hit in ans.sources:
+        for hit in retrieved:
             metadata = hit.metadata or {}
             title = _label(metadata, hit.id)
             url = metadata.get("url")

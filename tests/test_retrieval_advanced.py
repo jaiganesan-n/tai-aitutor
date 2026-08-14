@@ -5,12 +5,9 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
-import pytest
-
 import tai_aitutor as tai
-from tai_aitutor import llm, retrieval
+from tai_aitutor import llm
 from tai_aitutor.chunking import Chunk
-from tai_aitutor.errors import TaiAitutorError
 from tai_aitutor.retrieval import ScoredChunk
 
 # --------------------------------------------------------------------------- #
@@ -68,28 +65,6 @@ def test_bm25_query_uses_same_tokenizer():
     assert bm25.search("orbital_mechanics", top_k=1)  # dotted/camel forms match
 
 
-def test_bm25_save_load_round_trip(tmp_path):
-    bm25 = tai.BM25Index().build(CORPUS)
-    path = tmp_path / "bm25.json.gz"
-    bm25.save(path)
-    loaded = tai.BM25Index.load(path)
-    original = [(h.id, round(h.score, 9)) for h in bm25.search("python cooking", top_k=4)]
-    reloaded = [(h.id, round(h.score, 9)) for h in loaded.search("python cooking", top_k=4)]
-    assert original == reloaded
-    assert loaded._chunks[0].metadata == {"source": "blog"}
-
-
-def test_bm25_load_rejects_foreign_files(tmp_path):
-    import gzip
-    import json as jsonlib
-
-    path = tmp_path / "other.json.gz"
-    with gzip.open(path, "wt") as f:
-        jsonlib.dump({"format": "something-else"}, f)
-    with pytest.raises(TaiAitutorError):
-        tai.BM25Index.load(path)
-
-
 # --------------------------------------------------------------------------- #
 # RRF
 # --------------------------------------------------------------------------- #
@@ -141,37 +116,6 @@ class FakeCollection:
 
 def fake_embed(texts, task="query"):
     return [0.5, 0.5]
-
-
-def test_hybrid_search_fuses_both_legs():
-    bm25 = tai.BM25Index().build(CORPUS)
-    fused = tai.hybrid_search(
-        "python typing", FakeCollection(), bm25=bm25,
-        dense_top_k=3, bm25_top_k=3, keep=4, embed_fn=fake_embed,
-    )
-    assert fused[0].id == "d2"  # top of both legs
-    assert len(fused) <= 4
-    assert [h.rank for h in fused] == list(range(1, len(fused) + 1))
-
-
-def test_hybrid_search_where_filters_bm25_leg():
-    bm25 = tai.BM25Index().build(CORPUS)
-    fused = tai.hybrid_search(
-        "python", FakeCollection(), bm25=bm25,
-        keep=10, where={"source": {"$eq": "docs"}}, embed_fn=fake_embed,
-    )
-    keyword_ids = {h.id for h in fused}
-    # BM25 would return d0 (source=blog); the filter keeps only docs-side d2 from that leg
-    assert "d2" in keyword_ids
-
-
-def test_matches_where_shapes():
-    assert retrieval._matches_where({"source": "a"}, None)
-    assert retrieval._matches_where({"source": "a"}, {"source": {"$eq": "a"}})
-    assert not retrieval._matches_where({"source": "b"}, {"source": {"$eq": "a"}})
-    assert retrieval._matches_where({"source": "a"}, {"source": {"$in": ["a", "b"]}})
-    assert not retrieval._matches_where({}, {"source": {"$in": ["a"]}})
-    assert retrieval._matches_where({"source": "a"}, {"source": "a"})
 
 
 # --------------------------------------------------------------------------- #
@@ -281,74 +225,27 @@ def test_decompose_question(monkeypatch):
     assert tai.decompose_question("Simple?") == ["Simple?"]
 
 
-def test_subquestion_answer_pipeline(monkeypatch):
-    monkeypatch.setattr(
-        llm, "extract",
-        lambda p, s, system=None, model=None, provider=None: s(questions=["sub one?", "sub two?"])
-        if s.__name__ == "_SubQuestions" else (_ for _ in ()).throw(AssertionError),
-    )
-    completions = []
-
-    def fake_complete(prompt, system, cfg, temperature, max_tokens, reasoning_effort):
-        completions.append(prompt)
-        return f"answer #{len(completions)}", tai.Usage(10, 5)
-
-    monkeypatch.setattr(llm, "_complete", fake_complete)
-    retrieved = {"sub one?": [hit("a", 0.9, 1)], "sub two?": [hit("b", 0.8, 1), hit("a", 0.5, 2)]}
-    ans = tai.subquestion_answer("Compare one and two", retriever=lambda q: retrieved[q])
-    assert ans.text == "answer #3"                 # 2 sub-answers + 1 synthesis
-    assert len(completions) == 3
-    assert "Compare one and two" in completions[-1]
-    assert "answer #1" in completions[-1]
-    assert [h.id for h in ans.sources] == ["a", "b"]   # deduped, best-score order
-    assert ans.sources[0].score == 0.9
-    assert ans.usage.total_tokens == 45
-
-
-def test_multi_step_answer_stops_when_done(monkeypatch):
-    steps = iter([
-        (False, "follow-up?"),
-        (True, ""),
-    ])
-
-    def fake_extract(prompt, schema, system=None, model=None, provider=None):
-        done, nxt = next(steps)
-        return schema(done=done, next_question=nxt)
-
-    completions = []
-
-    def fake_complete(prompt, system, cfg, temperature, max_tokens, reasoning_effort):
-        completions.append(prompt)
-        return f"ans{len(completions)}", tai.Usage(1, 1)
-
-    monkeypatch.setattr(llm, "extract", fake_extract)
-    monkeypatch.setattr(llm, "_complete", fake_complete)
-    ans = tai.multi_step_answer(
-        "Big question?", retriever=lambda q: [hit(q[:3], 0.5, 1)], max_steps=5
-    )
-    # step1 answer + step2 answer + final synthesis = 3 completions; 2 planner calls
-    assert len(completions) == 3
-    assert ans.text == "ans3"
-    assert len(ans.sources) == 2
-
-
-def test_multi_step_requires_source():
-    with pytest.raises(TaiAitutorError):
-        tai.multi_step_answer("Q?")
-
-
 # --------------------------------------------------------------------------- #
 # pack_context
 # --------------------------------------------------------------------------- #
 
 
-def test_pack_context_budget(monkeypatch):
-    monkeypatch.setattr(retrieval, "n_tokens", lambda text, model=None: 100)
-    hits = [hit(f"c{i}", 1.0 - i * 0.1, i + 1) for i in range(5)]
-    kept = tai.pack_context(hits, max_tokens=250)
-    assert [h.id for h in kept] == ["c0", "c1"]
-    assert [h.rank for h in kept] == [1, 2]
-    assert tai.pack_context([], max_tokens=100) == []
-    assert tai.pack_context(hits, max_tokens=1_000_000) == [
-        ScoredChunk(chunk=h.chunk, score=h.score, rank=i + 1) for i, h in enumerate(hits)
-    ] or len(tai.pack_context(hits, max_tokens=1_000_000)) == 5
+
+
+# --------------------------------------------------------------------------- #
+# rewrite_query — the query transform the lesson teaches (Task 3 capability)
+# --------------------------------------------------------------------------- #
+
+
+def test_rewrite_query_returns_the_cleaned_string(monkeypatch):
+    seen = {}
+
+    def fake_generate(prompt, system=None, model=None, **kwargs):
+        seen["prompt"] = prompt
+        return "  LoRA parameter-efficient fine-tuning  \n"
+
+    monkeypatch.setattr(tai.retrieval._llm, "generate", fake_generate)
+    out = tai.rewrite_query("whats that lora trick??")
+    assert out == "LoRA parameter-efficient fine-tuning"
+    assert "whats that lora trick??" in seen["prompt"]
+    assert "ONLY the rewritten query" in seen["prompt"]

@@ -9,8 +9,8 @@ This package is the course's own code, packaged. Two documents govern it:
 **Teach-then-import.** The package only contains code some lesson writes out first, and
 every module docstring names that lesson. If a PR adds a public symbol no lesson teaches,
 it doesn't merge. Corollaries: small flat modules (readable in one sitting), functions
-over object graphs, no hidden state beyond `configure()`, loud failures with fix-it
-messages.
+over object graphs, state confined to one `configure()` call and to the objects a caller
+passes explicitly, loud failures with fix-it messages.
 
 ## Dev setup
 

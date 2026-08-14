@@ -1,13 +1,17 @@
 """Exceptions for tai-aitutor.
 
 Every error message should tell a student exactly what to do next.
+
+All of these subclass :class:`ValueError`, so the taught ``except ValueError``
+catches them — the notebook cells raise a bare ``ValueError`` for an unknown
+provider, and the package must be catchable the same way.
 """
 
 from __future__ import annotations
 
 
-class TaiAitutorError(Exception):
-    """Base class for all tai-aitutor errors."""
+class TaiAitutorError(ValueError):
+    """Base class for all tai-aitutor errors. Subclasses ``ValueError``."""
 
 
 class UnsupportedProviderError(TaiAitutorError):

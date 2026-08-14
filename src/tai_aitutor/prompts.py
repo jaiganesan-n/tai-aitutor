@@ -1,8 +1,8 @@
 """Shared prompt text, as plain readable constants.
 
-Replaces LlamaIndex's ``PromptTemplate`` objects and its hidden internal RAG
-prompts — the course shows every prompt as a visible f-string; these are the
-ones reused across notebooks.
+Where LlamaIndex kept its RAG and evaluator prompts inside the objects, the
+course shows every prompt as text you can read and edit. These are the ones
+reused across notebooks; a lesson-specific prompt stays in its lesson.
 """
 
 RAG_SYSTEM = (
@@ -31,14 +31,6 @@ def context_block(index: int, text: str, title: str | None = None, url: str | No
 # Evaluation prompts (built in: "Evaluating Your RAG Pipeline", Section 4)
 # --------------------------------------------------------------------------- #
 
-QA_GENERATION_SYSTEM = (
-    "You are a professor writing exam questions. Given a context excerpt from course "
-    "material, write questions that can be answered using ONLY that excerpt. "
-    "Rules: the questions must be self-contained (never refer to 'the context', "
-    "'the excerpt', or 'the passage'), must vary in phrasing, and must not be "
-    "answerable from general knowledge alone."
-)
-
 FAITHFULNESS_JUDGE = (
     "You are grading whether an ANSWER is faithful to the CONTEXT it was generated from. "
     "Faithful means every factual claim in the answer is supported by the context — "
@@ -61,11 +53,4 @@ CORRECTNESS_JUDGE = (
     "omissions; 3 = partially correct with real gaps; 2 = mostly incorrect; 1 = wrong or "
     "contradicts the reference. Judge substance, not wording. "
     "A score of 4.0 or above counts as passing."
-)
-
-SITUATE_CHUNK = (
-    "You are indexing course material for retrieval. Given a full DOCUMENT and one CHUNK "
-    "from it, write 1-2 sentences that situate the chunk within the document (what it is "
-    "about and where it fits), so the chunk is easier to find with search. "
-    "Answer with the situating context only."
 )

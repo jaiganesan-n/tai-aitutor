@@ -15,19 +15,31 @@ The plan contains: the complete inventory of every LlamaIndex class, function, i
 
 Distribution: **GitHub-install first** (`pip install git+...@v0.x.y` pinned to tags), **PyPI at course launch** (verify the `tai-aitutor` name is free before announcing; reserve it early with a 0.0.1 placeholder if we want insurance).
 
-One design rule governs everything: **the notebook teaches the concept inline first; the package is only allowed to carry code a previous lesson already taught.** The package must never become "our LlamaIndex" — a box of magic students import without understanding. It is the course's own code, packaged.
+One design rule governs everything: **the notebook teaches the concept inline first; the package is only allowed to carry code a previous lesson already taught.** It is the course's own code, packaged: every public symbol traces back to a cell the student has written, and its docstring names that lesson.
 
 ---
 
-## 1. Why a package, and what it must not become
+> **SUPERSEDED IN PART — 13 August 2026.** The API inventory in Section 4 below, and
+> every symbol list that follows from it, predate the strip pass described in
+> `tai_aitutor_strip_spec.md`. That pass removed `chat.py`, `extractors.py`,
+> `finetune.py`, the `answer` family, `ingest`, `hybrid_search`, `subquestion_answer`,
+> `multi_step_answer`, `pack_context`, `make_qa_pairs`, `run_judges`, `context_tokens`,
+> `make_retrieval_tool`, `render_tool_result`, `truncate`, `estimate_cost`,
+> `MODEL_PRICES`, the streaming/vision/batch wrappers, the message-and-tool layer, the
+> non-CSV loaders, and `BM25Index` persistence; and it changed the signatures of
+> `generate`, `extract`, `embed`, `embed_cohere`, `embed_local`, `hit_rate`, and
+> `mrr` (now `reciprocal_rank`). **Read `README.md` for the current public surface.**
+> Sections 1-3 (rationale, LlamaIndex inventory, principles) still stand.
+
+## 1. Why a package, and what it carries
 
 **Why.** The July decision replaced LlamaIndex with direct implementations. The first 20 ported notebooks prove the approach but expose the cost: every notebook re-defines the same 5–15 helper functions. Today `generate()` is defined in at least 17 notebooks, `embed()`/`chunk()`/`search()` in ~10, and the eval helpers (`make_qa_pairs`, `hit_rate`, `mrr`, three judges) are duplicated wherever evaluation appears. Every dataset URL change, model rename, or bug fix now multiplies across copies — exactly the maintenance trap the update was meant to end. A package we control gives us: one place to fix, one pin to bump per notebook, the same code in course and (eventually) production shape, and no dependence on a framework's roadmap.
 
-**What it must not become.** The pedagogical core of Decision 1 is that students *see* the code. So:
+**What it carries, and on what terms.** The pedagogical core of Decision 1 is that students *see* the code. So:
 
 1. **Build-inline-first rule.** A concept's first appearance is always written out in the notebook (chunking in the chunking lesson, BM25 in the hybrid lesson, judges in the eval lesson). Only *later* notebooks import it from `tai_aitutor`. The package README and each docstring link back to the lesson where the code is taught.
 2. **Readable source is a feature.** Small flat modules (target <300 lines each), plain functions, no inheritance trees, no `**kwargs` soup, no lazy loading tricks. A student who clicks through to the source should find the same code they wrote in the lesson, plus error handling.
-3. **Thin over general.** We implement what the course uses — not a framework. No plugin registries, no abstract base classes for hypothetical backends. When a lesson needs a variant, we add a function, not an abstraction layer.
+3. **Thin over general.** We implement exactly what the course uses. Where LlamaIndex offered a configurable class covering many backends, we ship the one path the lessons take. When a lesson needs a variant, we add a function, not an abstraction layer.
 4. **Mirror production.** Where production (`ai-tutor-app`) has an equivalent (`app/chroma_rag.py` chunking, BM25, RRF, rerank, token budget, `build_where_filter`; `evals/grade.py` retrieval metrics; `add_context_to_nodes.py` contextual retrieval), the package copies its logic and constants so course code and production code are the same thing at two sizes.
 
 ---

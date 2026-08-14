@@ -9,7 +9,6 @@ from tai_aitutor import evals
 from tai_aitutor.chunking import Chunk
 from tai_aitutor.errors import TaiAitutorError
 from tai_aitutor.retrieval import ScoredChunk
-from tai_aitutor.synthesis import Answer
 
 # --------------------------------------------------------------------------- #
 # QADataset — legacy compatibility is the acceptance test
@@ -77,37 +76,6 @@ def test_qadataset_sample_deterministic():
 # --------------------------------------------------------------------------- #
 
 
-def test_make_qa_pairs_builds_dataset(monkeypatch):
-    def fake_extract(prompt, schema, system=None, model=None, provider=None):
-        assert "Context excerpt" in prompt
-        return schema(questions=["Q about this?", "Another Q?"])
-
-    monkeypatch.setattr(evals, "extract", fake_extract)
-    chunks = [Chunk(id=f"c{i}", text=f"chunk text {i}") for i in range(6)]
-    qa = tai.make_qa_pairs(chunks, n_chunks=4, questions_per_chunk=2, show_progress=False)
-    assert len(qa.corpus) == 4
-    assert len(qa.queries) == 8
-    for qid, gold in qa.relevant_docs.items():
-        assert len(gold) == 1
-        assert qid.startswith(gold[0])
-        assert qa.queries[qid].endswith("?")
-
-
-def test_make_qa_pairs_deterministic_sampling(monkeypatch):
-    monkeypatch.setattr(
-        evals, "extract", lambda p, s, system=None, model=None, provider=None: s(questions=["Q?"])
-    )
-    chunks = [Chunk(id=f"c{i}", text=f"t{i}") for i in range(10)]
-    first = tai.make_qa_pairs(chunks, n_chunks=3, seed=1, show_progress=False)
-    second = tai.make_qa_pairs(chunks, n_chunks=3, seed=1, show_progress=False)
-    assert set(first.corpus) == set(second.corpus)
-
-
-def test_make_qa_pairs_empty_raises():
-    with pytest.raises(TaiAitutorError):
-        tai.make_qa_pairs([], show_progress=False)
-
-
 # --------------------------------------------------------------------------- #
 # Retrieval metrics
 # --------------------------------------------------------------------------- #
@@ -146,11 +114,6 @@ def test_top_k_changes_the_answer():
     report = tai.evaluate_retrieval(make_qa(), search_fn=fake_search_fn, top_k=2)
     assert abs(report.hit_rate - 1 / 3) < 1e-9
     assert report.top_k == 2
-
-
-def test_hit_rate_and_mrr_wrappers():
-    assert abs(tai.hit_rate(make_qa(), search_fn=fake_search_fn, top_k=5) - 2 / 3) < 1e-9
-    assert abs(tai.mrr(make_qa(), search_fn=fake_search_fn, top_k=5) - 4 / 9) < 1e-9
 
 
 def test_evaluate_retrieval_accepts_scoredchunk_results():
@@ -207,19 +170,6 @@ def test_sweep_top_k_validates_k_values():
         tai.sweep_top_k(make_qa(), [], search_fn=fake_search_fn)
     with pytest.raises(TaiAitutorError):
         tai.sweep_top_k(make_qa(), [0, 5], search_fn=fake_search_fn)
-
-
-def test_context_tokens_and_avg(monkeypatch):
-    monkeypatch.setattr("tai_aitutor.tokens.n_tokens", lambda text, model=None: len(text))
-    hits = [ScoredChunk(chunk=Chunk(id="a", text="12345"), score=1.0, rank=1),
-            ScoredChunk(chunk=Chunk(id="b", text="123"), score=0.9, rank=2)]
-    assert tai.context_tokens(hits) == 8
-    assert tai.context_tokens(["ab", "cd"]) == 4
-
-    report = tai.evaluate_retrieval(make_qa(), search_fn=fake_search_fn, top_k=5)
-    # retrieved ids outside qa.corpus are skipped; gold ids price their corpus text
-    avg = report.avg_context_tokens(make_qa())
-    assert avg == (len("gold 1") + len("gold 2") + 0) / 3
 
 
 # --------------------------------------------------------------------------- #
@@ -282,45 +232,19 @@ def fake_judges(monkeypatch):
     )
 
 
-def test_run_judges_aggregates(fake_judges):
-    rows = [
-        {"question": "q1", "answer": "good answer", "context": "ctx", "reference": "ref"},
-        {"question": "q2", "answer": "bad answer", "context": "ctx", "reference": "ref"},
-    ]
-    report = tai.run_judges(
-        rows, judges=("faithfulness", "relevancy", "correctness"), show_progress=False
-    )
-    assert report.n_rows == 2
-    assert report.faithfulness_rate == 0.5
-    assert report.relevancy_rate == 1.0
-    assert report.correctness_mean == 3.5
-    assert report.correctness_pass_rate == 0.5
-    assert report.summary()["faithfulness_rate"] == 0.5
-    # verdicts stay aligned with rows
-    assert report.verdicts["faithfulness"][0].faithful is True
-    assert report.verdicts["faithfulness"][1].faithful is False
 
 
-def test_run_judges_accepts_answer_objects(fake_judges):
-    hits = [ScoredChunk(chunk=Chunk(id="c", text="evidence"), score=1.0, rank=1)]
-    ans = Answer(text="good answer", sources=hits)
-    report = tai.run_judges(
-        [{"question": "q", "answer": ans}], judges=("faithfulness",), show_progress=False
-    )
-    assert report.faithfulness_rate == 1.0
-    assert report.relevancy_rate is None  # judge not run
+# --------------------------------------------------------------------------- #
+# Per-query metrics — the taught signatures (strip spec Fix 4)
+# --------------------------------------------------------------------------- #
 
 
-def test_run_judges_unknown_judge():
-    with pytest.raises(TaiAitutorError):
-        tai.run_judges([{"question": "q", "answer": "a"}], judges=("vibes",), show_progress=False)
+def test_hit_rate_is_per_query():
+    assert tai.hit_rate("doc-3", ["doc-9", "doc-3", "doc-1"]) == 1.0
+    assert tai.hit_rate("doc-7", ["doc-9", "doc-3"]) == 0.0
 
 
-def test_run_judges_correctness_requires_reference(fake_judges):
-    with pytest.raises(TaiAitutorError) as err:
-        tai.run_judges(
-            [{"question": "q", "answer": "a", "context": "c"}],
-            judges=("correctness",),
-            show_progress=False,
-        )
-    assert "reference" in str(err.value)
+def test_reciprocal_rank_is_one_over_rank():
+    assert tai.reciprocal_rank("doc-9", ["doc-9", "doc-3"]) == 1.0
+    assert tai.reciprocal_rank("doc-3", ["doc-9", "doc-3"]) == 0.5
+    assert tai.reciprocal_rank("doc-7", ["doc-9", "doc-3"]) == 0.0

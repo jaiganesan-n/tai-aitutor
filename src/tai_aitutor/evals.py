@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import random
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,16 +30,13 @@ from .chunking import Chunk
 from .errors import TaiAitutorError
 from .llm import extract
 from .retrieval import ScoredChunk, search
-from .vectorstore import get_all_chunks
 
 __all__ = [
     "QADataset",
-    "make_qa_pairs",
     "hit_rate",
-    "mrr",
+    "reciprocal_rank",
     "evaluate_retrieval",
     "sweep_top_k",
-    "context_tokens",
     "RetrievalReport",
     "QueryResult",
     "FaithfulnessVerdict",
@@ -49,8 +45,6 @@ __all__ = [
     "judge_faithfulness",
     "judge_relevancy",
     "judge_correctness",
-    "run_judges",
-    "JudgeReport",
 ]
 
 
@@ -125,67 +119,6 @@ class QADataset:
         return QADataset(queries=queries, corpus=corpus, relevant_docs=relevant, mode=self.mode)
 
 
-class _GeneratedQuestions(BaseModel):
-    questions: list[str] = Field(description="Self-contained exam questions for this excerpt.")
-
-
-def make_qa_pairs(
-    source,
-    n_chunks: int = 25,
-    questions_per_chunk: int = 1,
-    *,
-    model: str | None = None,
-    provider: str | None = None,
-    seed: int = 42,
-    concurrency: int = 8,
-    show_progress: bool = True,
-) -> QADataset:
-    """Generate a synthetic QA eval set from chunks — one typed LLM call per chunk.
-
-    Replaces ``generate_question_context_pairs``. ``source`` is a Chroma
-    collection or a list of :class:`Chunk` objects; ``n_chunks`` are sampled
-    deterministically (``seed``) so re-runs build the same dataset.
-    """
-    chunks: list[Chunk] = source if isinstance(source, list) else get_all_chunks(source)
-    if not chunks:
-        raise TaiAitutorError("make_qa_pairs got no chunks — ingest something first.")
-    if n_chunks < len(chunks):
-        chunks = random.Random(seed).sample(chunks, n_chunks)
-
-    dataset = QADataset()
-
-    def one(chunk: Chunk) -> tuple[Chunk, list[str]]:
-        prompt = (
-            f"Context excerpt:\n---------------------\n{chunk.text}\n---------------------\n\n"
-            f"Write exactly {questions_per_chunk} question(s) answerable only from this excerpt."
-        )
-        result = extract(
-            prompt,
-            _GeneratedQuestions,
-            system=prompts.QA_GENERATION_SYSTEM,
-            model=model,
-            provider=provider,
-        )
-        return chunk, result.questions[:questions_per_chunk]
-
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = [pool.submit(one, c) for c in chunks]
-        iterator = futures
-        if show_progress:
-            from tqdm.auto import tqdm
-
-            iterator = tqdm(futures, total=len(futures), desc="make_qa_pairs")
-        for future in iterator:
-            chunk, questions = future.result()
-            dataset.corpus[chunk.id] = chunk.text
-            for j, question in enumerate(questions):
-                qid = f"{chunk.id}-q{j}"
-                dataset.queries[qid] = question.strip()
-                dataset.relevant_docs[qid] = [chunk.id]
-
-    return dataset
-
-
 # --------------------------------------------------------------------------- #
 # Retrieval metrics (mirror production retrieval_metrics(): rank of the gold doc)
 # --------------------------------------------------------------------------- #
@@ -253,17 +186,6 @@ class RetrievalReport:
         )
 
 
-def context_tokens(hits) -> int:
-    """Total tokens of a retrieved context (ScoredChunk/Chunk lists or strings).
-
-    The exact per-call cost of what you're about to stuff into the prompt —
-    pairs with ``estimate_cost(context_tokens(hits), ...)``.
-    """
-    from .tokens import n_tokens
-
-    return sum(n_tokens(item.text if hasattr(item, "text") else str(item)) for item in hits)
-
-
 def _retrieved_ids(result) -> list[str]:
     """Accept search() output (ScoredChunk list) or a plain list of id strings."""
     ids = []
@@ -302,6 +224,20 @@ def evaluate_retrieval(
     callable — dense today, hybrid or reranked in the Section 7 lessons, so the
     same eval measures every retriever variant (and the reranker actually gets
     measured, unlike the old notebook bug).
+
+    Args:
+        qa: The evaluation dataset.
+        search_fn: Any ``(query, top_k) -> hits`` callable — dense, hybrid or
+            reranked, so every retriever variant is measured the same way.
+        collection: Used to build a default dense ``search_fn`` when none is given.
+        top_k: Cutoff to score at.
+        show_progress: Show a progress bar.
+
+    Returns:
+        A :class:`RetrievalReport` carrying hit rate, MRR, and the per-query table.
+
+    Raises:
+        ValueError: Neither ``search_fn`` nor ``collection`` was given.
     """
     fn = _make_search_fn(search_fn, collection)
     items: Iterable = qa.queries.items()
@@ -377,6 +313,20 @@ def sweep_top_k(
 
     >>> reports = sweep_top_k(qa, [2, 4, 6, 8, 10], collection=col)
     >>> show_eval_table({f"top_k={k}": r for k, r in reports.items()})
+
+    Args:
+        qa: The evaluation dataset.
+        k_values: The cutoffs to score.
+        search_fn: Any ``(query, top_k) -> hits`` callable.
+        collection: Used to build a default dense ``search_fn`` when none is given.
+        show_progress: Show a progress bar.
+
+    Returns:
+        One :class:`RetrievalReport` per cutoff, keyed by k. Retrieval runs once
+        per question at ``max(k_values)``; the smaller cutoffs are slices of it.
+
+    Raises:
+        ValueError: ``k_values`` is empty or contains a non-positive value.
     """
     ks = sorted({int(k) for k in k_values})
     if not ks or ks[0] <= 0:
@@ -396,24 +346,83 @@ def sweep_top_k(
     return {k: _score_ranked(qa, ranked, k) for k in ks}
 
 
-def hit_rate(qa: QADataset, search_fn=None, collection=None, top_k: int = 5) -> float:
-    """Fraction of questions whose gold chunk appears in the top-k results.
+def hit_rate(relevant_id: str, retrieved_ids: list[str]) -> float:
+    """Did the gold chunk appear anywhere in this query's retrieved ids?
 
-    (Needs MRR too? :func:`evaluate_retrieval` computes both in one retrieval pass.)
+    This is the per-query metric. Average it over a dataset yourself, or use
+    :func:`evaluate_retrieval`, which reports hit rate and MRR from one pass.
+
+    >>> hit_rate("doc-3", ["doc-9", "doc-3"])
+    1.0
+
+    Args:
+        relevant_id: The id of the chunk that should have been retrieved.
+        retrieved_ids: The retrieved chunk ids, best first.
+
+    Returns:
+        ``1.0`` if ``relevant_id`` is present, ``0.0`` otherwise.
     """
-    return evaluate_retrieval(qa, search_fn, collection, top_k).hit_rate
+    return 1.0 if relevant_id in retrieved_ids else 0.0
 
 
-def mrr(qa: QADataset, search_fn=None, collection=None, top_k: int = 5) -> float:
-    """Mean reciprocal rank of the first gold chunk in the top-k results."""
-    return evaluate_retrieval(qa, search_fn, collection, top_k).mrr
+def reciprocal_rank(relevant_id: str, retrieved_ids: list[str]) -> float:
+    """Where in the retrieved ids did the gold chunk land?
+
+    Mean this over a dataset and you have MRR; :func:`evaluate_retrieval` does
+    that for you.
+
+    >>> reciprocal_rank("doc-3", ["doc-9", "doc-3"])
+    0.5
+
+    Args:
+        relevant_id: The id of the chunk that should have been retrieved.
+        retrieved_ids: The retrieved chunk ids, best first.
+
+    Returns:
+        ``1 / rank`` using 1-based ranks — ``1.0`` for first place, ``0.5`` for
+        second — and ``0.0`` when the gold chunk is absent.
+    """
+    if relevant_id not in retrieved_ids:
+        return 0.0
+    return 1.0 / (retrieved_ids.index(relevant_id) + 1)
 
 
 # --------------------------------------------------------------------------- #
 # LLM judges (typed verdicts; replace the evaluator classes)
 # --------------------------------------------------------------------------- #
 
+#: A judge should be at least as strong as the model it grades, so judging does
+#: not default to the configured chat model. Sourced from the strip spec's
+#: Decision 2 quotation; as of 2026-08-13.
+# TODO: [NEEDS UPDATE — judge model ids for openai and anthropic | source: internal doc
+# (course_update_plan.md v4, Decision 2) | Decision 7 names only the Gemini judge
+# (gemini-3.6-flash); the other two providers fall back to the configured chat model
+# until the verified ids are supplied.]
+JUDGE_MODELS: dict[str, str] = {
+    "gemini": "gemini-3.6-flash",
+}
 
+
+def _judge_model(model: str | None, provider: str | None) -> str | None:
+    """The judge model for this call: explicit ``model`` wins, else the per-provider
+    default, else ``None`` (meaning the configured chat model)."""
+    if model is not None:
+        return model
+    from . import config as _cfg
+
+    prov = provider or _cfg.get_config().provider
+    return JUDGE_MODELS.get(prov)
+
+
+
+# TODO: [NEEDS UPDATE — decide the verdict schema shape | source: internal doc
+# (tai_aitutor_strip_spec.md Fix 6) vs. test run (the swept 06-Evaluate_RAG.ipynb) |
+# Fix 6 says 06 uses ONE shared JudgeVerdict(passing, reasoning) for faithfulness and
+# relevancy. The swept notebook cell 20 defines TWO classes — FaithfulnessVerdict(faithful,
+# reason) and RelevancyVerdict(relevant, reason) — i.e. the shape below, with the field
+# named `reason` rather than `reasoning`. Applying Fix 6 literally would make the package
+# contradict the cell students just read, so the current shape is left in place pending a
+# decision. See the Task 2 report.]
 class FaithfulnessVerdict(BaseModel):
     """Is every claim in the answer supported by the retrieved context?"""
 
@@ -428,6 +437,13 @@ class RelevancyVerdict(BaseModel):
     reasoning: str
 
 
+# TODO: [NEEDS UPDATE — decide the correctness scale and field names | source: internal doc
+# (tai_aitutor_strip_spec.md Fix 6) vs. test run (the swept 06-Evaluate_RAG.ipynb) | Fix 6
+# says 06 scores 0-5 ("0: entirely incorrect") with fields score/feedback. The swept notebook
+# scores 1-5 (`score: float  # 1 (wrong) .. 5 (fully correct)`, prompt: "Return ONLY JSON:
+# {"score": <number 1-5>}") — so the ge=1.0 bound below already matches the taught cell and
+# only the field name differs (`feedback` taught vs `reasoning` here). Left as-is pending a
+# decision. See the Task 2 report.]
 class CorrectnessVerdict(BaseModel):
     """1-5 score of the answer against a reference answer (>= 4.0 passes)."""
 
@@ -456,14 +472,28 @@ def judge_faithfulness(
     model: str | None = None,
     provider: str | None = None,
 ) -> FaithfulnessVerdict:
-    """Replaces ``FaithfulnessEvaluator.evaluate_response`` with one typed call."""
+    """Replaces ``FaithfulnessEvaluator.evaluate_response`` with one typed call.
+
+    Args:
+        answer: The generated answer.
+        context: A string, a list of strings, or retrieval hits.
+        model: Model id; defaults to the provider's judge model.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        A :class:`FaithfulnessVerdict` — ``faithful`` plus the reasoning.
+
+    Raises:
+        ValueError: The provider is unknown, its SDK is missing, or the response
+            could not be parsed into the verdict schema.
+    """
     prompt = (
         f"CONTEXT:\n{_context_text(context)}\n\n"
         f"ANSWER:\n{answer}\n\n"
         "Is the answer faithful to the context?"
     )
     return extract(
-        prompt, FaithfulnessVerdict, system=prompts.FAITHFULNESS_JUDGE, model=model, provider=provider
+        prompt, FaithfulnessVerdict, system=prompts.FAITHFULNESS_JUDGE, model=_judge_model(model, provider), provider=provider
     )
 
 
@@ -475,7 +505,22 @@ def judge_relevancy(
     model: str | None = None,
     provider: str | None = None,
 ) -> RelevancyVerdict:
-    """Replaces ``RelevancyEvaluator`` with one typed call."""
+    """Replaces ``RelevancyEvaluator`` with one typed call.
+
+    Args:
+        question: The question asked.
+        answer: The generated answer.
+        context: A string, a list of strings, or retrieval hits.
+        model: Model id; defaults to the provider's judge model.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        A :class:`RelevancyVerdict` — ``relevant`` plus the reasoning.
+
+    Raises:
+        ValueError: The provider is unknown, its SDK is missing, or the response
+            could not be parsed into the verdict schema.
+    """
     prompt = (
         f"QUESTION:\n{question}\n\n"
         f"CONTEXT:\n{_context_text(context)}\n\n"
@@ -483,7 +528,7 @@ def judge_relevancy(
         "Do the answer and context address the question?"
     )
     return extract(
-        prompt, RelevancyVerdict, system=prompts.RELEVANCY_JUDGE, model=model, provider=provider
+        prompt, RelevancyVerdict, system=prompts.RELEVANCY_JUDGE, model=_judge_model(model, provider), provider=provider
     )
 
 
@@ -495,7 +540,23 @@ def judge_correctness(
     model: str | None = None,
     provider: str | None = None,
 ) -> CorrectnessVerdict:
-    """Replaces ``CorrectnessEvaluator`` with one typed call (1-5, >= 4.0 passes)."""
+    """Replaces ``CorrectnessEvaluator`` with one typed call (1-5, >= 4.0 passes).
+
+    Args:
+        question: The question asked.
+        answer: The generated answer.
+        reference: The gold answer to score against.
+        model: Model id; defaults to the provider's judge model.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        A :class:`CorrectnessVerdict` — a 1-5 ``score`` plus the reasoning;
+        ``verdict.passing`` is ``True`` at 4.0 or above.
+
+    Raises:
+        ValueError: The provider is unknown, its SDK is missing, or the response
+            could not be parsed into the verdict schema.
+    """
     prompt = (
         f"QUESTION:\n{question}\n\n"
         f"REFERENCE ANSWER:\n{reference}\n\n"
@@ -503,128 +564,5 @@ def judge_correctness(
         "Score the generated answer against the reference."
     )
     return extract(
-        prompt, CorrectnessVerdict, system=prompts.CORRECTNESS_JUDGE, model=model, provider=provider
+        prompt, CorrectnessVerdict, system=prompts.CORRECTNESS_JUDGE, model=_judge_model(model, provider), provider=provider
     )
-
-
-# --------------------------------------------------------------------------- #
-# Batch judging (replaces BatchEvalRunner — threads, no asyncio)
-# --------------------------------------------------------------------------- #
-
-_JUDGES = {
-    "faithfulness": lambda row, kw: judge_faithfulness(row["answer"], row["context"], **kw),
-    "relevancy": lambda row, kw: judge_relevancy(
-        row["question"], row["answer"], row["context"], **kw
-    ),
-    "correctness": lambda row, kw: judge_correctness(
-        row["question"], row["answer"], row["reference"], **kw
-    ),
-}
-
-
-@dataclass
-class JudgeReport:
-    """Aggregated judge verdicts over many rows, with every verdict kept."""
-
-    verdicts: dict[str, list]  # judge name -> verdict per row (aligned with rows)
-    n_rows: int
-
-    @property
-    def faithfulness_rate(self) -> float | None:
-        return self._rate("faithfulness", lambda v: v.faithful)
-
-    @property
-    def relevancy_rate(self) -> float | None:
-        return self._rate("relevancy", lambda v: v.relevant)
-
-    @property
-    def correctness_mean(self) -> float | None:
-        scores = [v.score for v in self.verdicts.get("correctness", [])]
-        return sum(scores) / len(scores) if scores else None
-
-    @property
-    def correctness_pass_rate(self) -> float | None:
-        return self._rate("correctness", lambda v: v.passing)
-
-    def _rate(self, judge: str, predicate) -> float | None:
-        verdicts = self.verdicts.get(judge)
-        if not verdicts:
-            return None
-        return sum(bool(predicate(v)) for v in verdicts) / len(verdicts)
-
-    def summary(self) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for name, value in (
-            ("faithfulness_rate", self.faithfulness_rate),
-            ("relevancy_rate", self.relevancy_rate),
-            ("correctness_mean", self.correctness_mean),
-            ("correctness_pass_rate", self.correctness_pass_rate),
-        ):
-            if value is not None:
-                out[name] = round(value, 4)
-        return out
-
-    def __repr__(self) -> str:
-        stats = ", ".join(f"{k}={v}" for k, v in self.summary().items())
-        return f"JudgeReport(n={self.n_rows}, {stats})"
-
-
-def _normalize_row(row) -> dict:
-    """Rows are dicts; an Answer in ``answer`` contributes its text and sources."""
-    row = dict(row)
-    answer = row.get("answer")
-    if hasattr(answer, "text"):  # synthesis.Answer
-        if "context" not in row and getattr(answer, "sources", None):
-            row["context"] = answer.sources
-        row["answer"] = answer.text
-    row.setdefault("context", "")
-    return row
-
-
-def run_judges(
-    rows: list[dict],
-    judges: tuple[str, ...] = ("faithfulness", "relevancy"),
-    *,
-    model: str | None = None,
-    provider: str | None = None,
-    concurrency: int = 8,
-    show_progress: bool = True,
-) -> JudgeReport:
-    """Judge many (question, answer, context[, reference]) rows concurrently.
-
-    Replaces ``BatchEvalRunner(...).aevaluate_queries`` — a thread pool over
-    typed judge calls, so there is no asyncio and no ``nest_asyncio`` cell.
-
-    Each row is a dict with ``question``, ``answer`` (string or an
-    :class:`~tai_aitutor.synthesis.Answer`, whose sources become the context),
-    optional ``context``, and ``reference`` (required for ``"correctness"``).
-    """
-    unknown = [j for j in judges if j not in _JUDGES]
-    if unknown:
-        raise TaiAitutorError(f"Unknown judge(s) {unknown}. Available: {sorted(_JUDGES)}")
-    normalized = [_normalize_row(r) for r in rows]
-    if "correctness" in judges:
-        missing = [i for i, r in enumerate(normalized) if "reference" not in r]
-        if missing:
-            raise TaiAitutorError(
-                f"correctness judging needs a 'reference' answer; rows {missing[:5]} lack one."
-            )
-
-    kw = {"model": model, "provider": provider}
-    results: dict[str, list] = {j: [None] * len(normalized) for j in judges}
-
-    def work(judge_name: str, index: int):
-        results[judge_name][index] = _JUDGES[judge_name](normalized[index], kw)
-
-    tasks = [(j, i) for j in judges for i in range(len(normalized))]
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = [pool.submit(work, j, i) for j, i in tasks]
-        iterator = futures
-        if show_progress and futures:
-            from tqdm.auto import tqdm
-
-            iterator = tqdm(futures, total=len(futures), desc="run_judges")
-        for future in iterator:
-            future.result()
-
-    return JudgeReport(verdicts=results, n_rows=len(normalized))

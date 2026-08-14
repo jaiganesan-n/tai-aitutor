@@ -46,6 +46,21 @@ def route(
     ``decision.route`` is guaranteed to be one of your keys (case-insensitive
     matching is applied; anything unresolvable raises rather than mis-routing
     silently).
+
+    Args:
+        question: The incoming question.
+        routes: Route name to description. The model chooses by the
+            descriptions, exactly as it chooses tools.
+        model: Model id for the routing call.
+        provider: Override the configured provider for this call.
+
+    Returns:
+        A :class:`RouteDecision` whose ``route`` is guaranteed to be one of your
+        keys.
+
+    Raises:
+        ValueError: ``routes`` is empty, or the model's pick matched no route —
+            better a loud failure than a silent mis-route.
     """
     if not routes:
         raise TaiAitutorError("route() needs at least one route (name -> description).")
@@ -70,12 +85,8 @@ def route(
 
 
 def _match_route(name: str, routes: dict[str, str]) -> str | None:
-    """Exact, then case-insensitive, then unambiguous-substring match."""
+    """Exact match, then case-insensitive match. Anything else is unresolved."""
     if name in routes:
         return name
-    lowered = name.lower().strip()
     by_lower = {key.lower(): key for key in routes}
-    if lowered in by_lower:
-        return by_lower[lowered]
-    partial = [key for low, key in by_lower.items() if low in lowered or lowered in low]
-    return partial[0] if len(partial) == 1 else None
+    return by_lower.get(name.lower().strip())

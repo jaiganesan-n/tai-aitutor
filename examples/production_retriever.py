@@ -1,73 +1,51 @@
-"""The production retrieval chain (Section 7, stage for stage) + its evaluation.
+"""The production retrieval chain, assembled from the parts the course teaches.
 
-Data downloads are explicit and yours to relocate (see quickstart.py).
+dense ∪ BM25 -> Reciprocal Rank Fusion -> Cohere rerank. The package ships each
+stage separately and no composite that hides them, so the chain you run is the
+chain you can read.
 
-Needs: pip install "tai-aitutor[gemini,rag,rerank,data]",
-GOOGLE_API_KEY + COHERE_API_KEY in .env.
+Run:
+    pip install "tai-aitutor[gemini,rag,rerank]"
+    python examples/production_retriever.py
 """
 
-import urllib.request
-from pathlib import Path
-
-from huggingface_hub import hf_hub_download
+from __future__ import annotations
 
 from tai_aitutor import (
     BM25Index,
     QADataset,
-    answer,
     configure,
     evaluate_retrieval,
     get_all_chunks,
     get_collection,
-    hybrid_search,
-    ingest,
-    load_csv,
-    pack_context,
     rerank,
+    rrf_fuse,
     search,
-    setup_notebook,
     show_eval_table,
 )
 
-setup_notebook(required_keys=("GOOGLE_API_KEY", "COHERE_API_KEY"))
 configure(provider="gemini")
 
-# --- data (explicit downloads; host these wherever the course decides) ---
-DATA_URL = "https://raw.githubusercontent.com/AlaFalaki/tutorial_notebooks/main/data/mini-llama-articles.csv"
-csv_path = Path("mini-llama-articles.csv")
-if not csv_path.exists():
-    urllib.request.urlretrieve(DATA_URL, csv_path)
-qa_path = hf_hub_download(
-    repo_id="jaiganesan/ai_tutor_knowledge",
-    filename="rag_eval_dataset_question_context_subset_50.json",
-    repo_type="dataset",
-)
-qa = QADataset.load(qa_path)  # legacy-compatible JSON, loads unchanged
-
-col = get_collection("mini_articles", path="./db")
-if col.count() == 0:
-    docs = load_csv(csv_path, text_col="content",
-                    meta_cols=("title", "url", "source"), id_col="title")
-    ingest(docs, col)
-
-bm25 = BM25Index().build(get_all_chunks(col))  # build once; bm25.save()/load() to reuse
+col = get_collection("ai_tutor_knowledge", path="./tai-knowledge-chroma")
+bm25 = BM25Index().build(get_all_chunks(col))
 
 
-def production_retriever(query: str):
-    hits = hybrid_search(query, col, bm25)          # dense 15 ∪ BM25 30 → RRF keep 30
-    hits = rerank(query, hits)                      # Cohere v4-fast, top 5, floor 0.10
-    return pack_context(hits, max_tokens=30_000)    # the cost knob
+def fused(query: str, top_k: int = 30):
+    """Dense 15 ∪ BM25 30 -> RRF k=60, keeping top_k — production's constants."""
+    return rrf_fuse(search(query, col, top_k=15), bm25.search(query, top_k=30), keep=top_k)
 
 
-# The four-row ablation from the Hybrid Search lesson — same eval, four retrievers:
+def production_retriever(query: str, top_k: int = 5):
+    """The full chain: fuse a wide candidate set, then rerank it down."""
+    return rerank(query, fused(query, top_k=30), top_n=top_k)
+
+
+# The ablation the Hybrid Search and Re-Ranking lessons measure.
+qa = QADataset.load("rag_eval_dataset.json")
 reports = {
     "dense only": evaluate_retrieval(qa, search_fn=lambda q, k: search(q, col, top_k=k)),
     "BM25 only": evaluate_retrieval(qa, search_fn=lambda q, k: bm25.search(q, top_k=k)),
-    "fused (RRF)": evaluate_retrieval(qa, search_fn=lambda q, k: hybrid_search(q, col, bm25, keep=k)),
-    "fused + rerank": evaluate_retrieval(qa, search_fn=lambda q, k: rerank(q, hybrid_search(q, col, bm25), top_n=k)),
+    "fused (RRF)": evaluate_retrieval(qa, search_fn=fused),
+    "fused + rerank": evaluate_retrieval(qa, search_fn=production_retriever),
 }
-show_eval_table(reports, extra_columns={
-    "avg ctx tokens": {label: f"{r.avg_context_tokens(qa):.0f}" for label, r in reports.items()},
-})
-
-print(answer("How does hybrid search work?", retriever=production_retriever))
+show_eval_table(reports)

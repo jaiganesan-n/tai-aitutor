@@ -17,11 +17,10 @@ picks Anthropic for chat still embeds with Gemini (default) or OpenAI.
 from __future__ import annotations
 
 import warnings
-from typing import overload
 
 from . import config as _cfg
 from ._retry import with_retries
-from .errors import EmbeddingsNotAvailableError, ProviderNotInstalledError
+from .errors import EmbeddingsNotAvailableError, MissingKeyError, ProviderNotInstalledError
 
 __all__ = ["embed", "embed_cohere", "embed_local"]
 
@@ -30,8 +29,10 @@ Vector = list[float]
 _GEMINI_TASKS = {"document": "RETRIEVAL_DOCUMENT", "query": "RETRIEVAL_QUERY"}
 _COHERE_TASKS = {"document": "search_document", "query": "search_query"}
 
-#: Per-request input caps (provider API limits; batches are split to fit).
-_MAX_BATCH = {"gemini": 100, "openai": 2048, "cohere": 96}
+#: The course pins every embedder to 1536 dimensions so vectors stay comparable
+#: across lessons and providers, and so an embedding cache built with one
+#: provider still loads under another.
+EMBED_DIM = 1536
 
 _local_models: dict[str, object] = {}
 
@@ -42,42 +43,56 @@ def _check_task(task: str) -> str:
     return task
 
 
-def _batched(items: list[str], size: int):
-    for start in range(0, len(items), size):
-        yield items[start : start + size]
-
-
-@overload
-def embed(texts: str, task: str = ..., *, provider: str | None = ..., model: str | None = ..., batch_size: int = ..., api_key: str | None = ...) -> Vector: ...
-@overload
-def embed(texts: list[str], task: str = ..., *, provider: str | None = ..., model: str | None = ..., batch_size: int = ..., api_key: str | None = ...) -> list[Vector]: ...
-
-
 def embed(
     texts,
     task: str = "document",
     *,
     provider: str | None = None,
     model: str | None = None,
-    batch_size: int = 100,
     api_key: str | None = None,
-):
-    """Embed one string (returns a vector) or a list of strings (returns a list).
+    retries: int = 0,
+) -> list[Vector]:
+    """Embed text on whichever embedding provider is configured.
 
-    ``task``: ``"document"`` when indexing, ``"query"`` when searching.
+    Args:
+        texts: One string, or a list of strings. A single string is treated as a
+            one-item list.
+        task: ``"document"`` when indexing, ``"query"`` when searching. Gemini,
+            Cohere and e5-style local models encode the two sides differently;
+            OpenAI does not.
+        provider: Override the configured embedding provider for this call.
+        model: Embedding model id; defaults to the configured model.
+        api_key: Override the environment key for this call.
+        retries: Retry attempts on transient errors. ``0`` (the default) means
+            the call is made exactly once.
 
-    >>> vectors = embed([c.text for c in chunks])          # index time
-    >>> qvec    = embed("What is RAG?", task="query")       # search time
+    Returns:
+        A list of vectors — **always a list, even for a single input**, so
+        ``embed(question, task="query")[0]`` is the query vector. Every vector is
+        :data:`EMBED_DIM` floats long.
+
+    Raises:
+        ValueError: The provider has no embeddings API (Anthropic) or is not one
+            this package knows.
+
+    The caller does the batching: loop your corpus in slices and call ``embed``
+    once per slice, exactly as the indexing lesson does.
+
+    >>> vectors = embed([c.text for c in chunks])         # index time
+    >>> qvec    = embed("What is RAG?", task="query")[0]  # search time
     """
     _check_task(task)
-    single = isinstance(texts, str)
-    items: list[str] = [texts] if single else list(texts)
+    items: list[str] = [texts] if isinstance(texts, str) else list(texts)
     if not items:
-        return [] if not single else []
+        return []
+    # Embedding models work best on single-line inputs.
+    items = [t.replace("\n", " ") for t in items]
 
     cfg = _cfg.get_config()
     prov = (provider or cfg.embed_provider).lower()
-    mdl = model or (cfg.embed_model if prov == cfg.embed_provider else _cfg.EMBED_MODEL_DEFAULTS.get(prov))
+    mdl = model or (
+        cfg.embed_model if prov == cfg.embed_provider else _cfg.EMBED_MODEL_DEFAULTS.get(prov)
+    )
 
     if prov == "anthropic":
         raise EmbeddingsNotAvailableError(
@@ -86,85 +101,97 @@ def embed(
         )
 
     if prov == "gemini":
-        vectors = _embed_gemini(items, task, mdl, batch_size, api_key)
-    elif prov == "openai":
-        vectors = _embed_openai(items, mdl, batch_size, api_key)
-    elif prov == "cohere":
-        vectors = embed_cohere(items, task, model=mdl, api_key=api_key)
-    elif prov == "local":
-        vectors = embed_local(items, model_name=mdl, task=task)
-    else:
-        raise EmbeddingsNotAvailableError(
-            f"No embeddings branch for provider {prov!r}. "
-            'Use "gemini", "openai", "cohere", or "local".'
-        )
-
-    return vectors[0] if single else vectors
+        return _embed_gemini(items, task, mdl, api_key, retries)
+    if prov == "openai":
+        return _embed_openai(items, mdl, api_key, retries)
+    if prov == "cohere":
+        return embed_cohere(items, task, mdl, EMBED_DIM, api_key=api_key, retries=retries)
+    if prov == "local":
+        return embed_local(items, mdl, task)
+    raise EmbeddingsNotAvailableError(
+        f"No embeddings branch for provider {prov!r}. "
+        'Use "gemini", "openai", "cohere", or "local".'
+    )
 
 
-def _embed_gemini(items, task, model, batch_size, api_key):
+def _embed_gemini(items, task, model, api_key, retries) -> list[Vector]:
     from .llm import _client_gemini
 
     client = _client_gemini(api_key or _cfg.api_key_for("gemini"))
-    out: list[Vector] = []
-    for batch in _batched(items, min(batch_size, _MAX_BATCH["gemini"])):
 
-        def call(b=batch):
-            from google.genai import types
+    def call(batch):
+        from google.genai import types
 
-            resp = client.models.embed_content(
-                model=model,
-                contents=b,
-                config=types.EmbedContentConfig(task_type=_GEMINI_TASKS[task]),
-            )
-            return [list(e.values) for e in resp.embeddings]
+        resp = client.models.embed_content(
+            model=model,
+            contents=batch,
+            config=types.EmbedContentConfig(
+                task_type=_GEMINI_TASKS[task],
+                output_dimensionality=EMBED_DIM,
+            ),
+        )
+        return [list(e.values) for e in resp.embeddings]
 
-        out.extend(with_retries(call))
-    return out
+    vectors = with_retries(lambda: call(items), retries=retries)
+    if len(vectors) != len(items):
+        # A multimodal Gemini embedder can read a list as ONE document and return a
+        # single aggregated vector. Verify counts at the API boundary, then fall back
+        # to one call per input. Behaviour-invisible: one vector per input either way.
+        vectors = [with_retries(lambda t=t: call([t]), retries=retries)[0] for t in items]
+    return vectors
 
 
-def _embed_openai(items, model, batch_size, api_key):
+def _embed_openai(items, model, api_key, retries) -> list[Vector]:
     from .llm import _client_openai
 
     client = _client_openai(api_key or _cfg.api_key_for("openai"))
-    out: list[Vector] = []
-    for batch in _batched(items, min(batch_size, _MAX_BATCH["openai"])):
 
-        def call(b=batch):
-            resp = client.embeddings.create(model=model, input=b)
-            data = sorted(resp.data, key=lambda d: d.index)
-            return [list(d.embedding) for d in data]
+    def call():
+        resp = client.embeddings.create(model=model, input=items, dimensions=EMBED_DIM)
+        data = sorted(resp.data, key=lambda d: d.index)
+        return [list(d.embedding) for d in data]
 
-        out.extend(with_retries(call))
-    return out
+    return with_retries(call, retries=retries)
 
 
 def embed_cohere(
     texts,
     task: str = "document",
-    *,
     model: str = "embed-v4.0",
-    output_dimension: int | None = 1536,
+    output_dimension: int | None = EMBED_DIM,
+    batch_size: int = 96,
+    *,
     api_key: str | None = None,
-) -> list[Vector] | Vector:
+    retries: int = 0,
+) -> list[Vector]:
     """Cohere embeddings via ``ClientV2.embed`` — the production embedder.
 
-    Teaches the ``input_type`` asymmetry explicitly: ``search_document`` at
-    index time, ``search_query`` at search time (exactly as production does).
+    Args:
+        texts: One string, or a list of strings.
+        task: ``"document"`` at index time, ``"query"`` at search time. This
+            becomes Cohere's ``input_type`` — the asymmetry production relies on.
+        model: Cohere embedding model id.
+        output_dimension: ``embed-v4.0`` is Matryoshka-trained
+            (256/512/1024/1536), so the dimension is a choice; the course pins
+            :data:`EMBED_DIM`. Pass ``None`` to take the API default.
+        batch_size: Texts per request — the API caps them.
+        api_key: Override ``COHERE_API_KEY`` for this call.
+        retries: Retry attempts on transient errors; ``0`` means one call.
 
-    ``embed-v4.0`` is Matryoshka-trained (256/512/1024/1536); the course
-    standardises on **1536** so vectors stay comparable across notebooks and
-    storage cost stays predictable — hence the explicit default. Pass a smaller
-    ``output_dimension`` for the storage-vs-quality experiment, or ``None`` to
-    take whatever the API's default is.
+    Returns:
+        A list of vectors, one per input, always a list.
+
+    Raises:
+        ValueError: The ``cohere`` package is not installed, or no API key is set.
     """
     _check_task(task)
-    single = isinstance(texts, str)
-    items = [texts] if single else list(texts)
+    items = [texts] if isinstance(texts, str) else list(texts)
+    items = [t.replace("\n", " ") for t in items]
 
     client = _client_cohere(api_key)
     out: list[Vector] = []
-    for batch in _batched(items, _MAX_BATCH["cohere"]):
+    for start in range(0, len(items), batch_size):  # the API caps texts per call
+        batch = items[start : start + batch_size]
 
         def call(b=batch):
             kwargs: dict = {}
@@ -195,11 +222,11 @@ def embed_cohere(
                 )
             floats = getattr(resp.embeddings, "float_", None)
             if floats is None:  # SDK versions differ on the alias
-                floats = getattr(resp.embeddings, "float")
+                floats = resp.embeddings.float
             return [list(v) for v in floats]
 
-        out.extend(with_retries(call))
-    return out[0] if single else out
+        out.extend(with_retries(call, retries=retries))
+    return out
 
 
 def _client_cohere(api_key: str | None = None):
@@ -210,73 +237,77 @@ def _client_cohere(api_key: str | None = None):
             "The Cohere SDK is not installed. Run: pip install 'tai-aitutor[rerank]'"
         ) from exc
     key = api_key or _cfg.api_key_for("cohere")
-    return cohere.ClientV2(api_key=key) if key else cohere.ClientV2()
+    if not key:
+        raise MissingKeyError(
+            "No COHERE_API_KEY found. Set it in Colab Secrets or your .env file, or pass "
+            "api_key=... — reranking and Cohere embeddings both need it (free tier at cohere.com)."
+        )
+    return cohere.ClientV2(api_key=key)
 
 
-#: Known instruction-tuned retrieval models → the query instruction they expect.
-#: Matched by substring against the lowercased model name; extend as lessons add models.
-#: (e5's "query:"/"passage:" prefixes are handled separately below.)
-_KNOWN_QUERY_PROMPTS: dict[str, str] = {
+# Query-side instructions for instruction-tuned retrieval families (as of July 2026).
+# Documents embed plain; ONLY queries carry the instruction. The e5 family is
+# different again: it prefixes BOTH sides ("query: " / "passage: ").
+_QUERY_PROMPTS: dict[str, str] = {
     "qwen3-embedding": (
-        "Instruct: Given a web search query, retrieve relevant passages that answer "
-        "the query\nQuery: "
+        "Instruct: Given a web search query, retrieve relevant passages that "
+        "answer the query\nQuery: "
     ),
     "gte-qwen": (
-        "Instruct: Given a web search query, retrieve relevant passages that answer "
-        "the query\nQuery: "
+        "Instruct: Given a web search query, retrieve relevant passages that "
+        "answer the query\nQuery: "
     ),
-    "linq-embed": "Instruct: Given a question, retrieve passages that answer the question\nQuery: ",
 }
-
-
-def _default_query_prompt(model_name: str) -> str | None:
-    lowered = model_name.lower()
-    for marker, prompt in _KNOWN_QUERY_PROMPTS.items():
-        if marker in lowered:
-            return prompt
-    return None
 
 
 def embed_local(
     texts,
-    *,
-    model_name: str = "BAAI/bge-small-en-v1.5",
+    model_name: str,
     task: str = "document",
-    batch_size: int = 32,
-    normalize: bool = True,
     query_prompt: str | None = None,
-) -> list[Vector] | Vector:
-    """Local embeddings with sentence-transformers (free, offline once downloaded).
+) -> list[Vector]:
+    """Embed with a local sentence-transformers model (free, offline once downloaded).
 
-    Prefix handling — the invisible failure the embedding lesson warns about,
-    handled instead of skipped:
+    Args:
+        texts: One string, or a list of strings.
+        model_name: A sentence-transformers model id, e.g. ``"BAAI/bge-small-en-v1.5"``.
+        task: ``"document"`` or ``"query"``.
+        query_prompt: Explicit query instruction, for models
+            :data:`_QUERY_PROMPTS` does not recognise.
 
-    - e5 family: the required ``"query: "`` / ``"passage: "`` prefixes are
-      applied automatically.
-    - Instruction-tuned retrievers (Qwen3-Embedding, gte-Qwen, Linq-Embed…):
-      a query instruction is applied automatically for known models
-      (``_KNOWN_QUERY_PROMPTS``), and ``query_prompt=`` sets it explicitly for
-      anything else. Documents are embedded plain, queries get the instruction
-      — skipping it silently costs retrieval accuracy.
+    Returns:
+        A list of vectors, one per input, always a list. Vectors are
+        L2-normalised, so a dot product is a cosine similarity.
+
+    Raises:
+        ValueError: ``sentence-transformers`` is not installed.
+
+    Prefix handling is the invisible failure the embedding lesson warns about,
+    so it is handled here rather than skipped: the e5 family gets its
+    ``"query: "`` / ``"passage: "`` prefixes on both sides, instruction-tuned
+    retrievers get a query instruction on the query side only.
     """
     _check_task(task)
-    single = isinstance(texts, str)
-    items = [texts] if single else list(texts)
+    items = [texts] if isinstance(texts, str) else list(texts)
 
     if "e5" in model_name.lower():
-        prefix = "query: " if task == "query" else "passage: "
+        prefix = query_prompt if query_prompt is not None else (
+            "query: " if task == "query" else "passage: "
+        )
         items = [prefix + t for t in items]
     elif task == "query":
-        instruction = query_prompt if query_prompt is not None else _default_query_prompt(model_name)
+        instruction = query_prompt
+        if instruction is None:
+            lowered = model_name.lower()
+            instruction = next(
+                (p for marker, p in _QUERY_PROMPTS.items() if marker in lowered), None
+            )
         if instruction:
             items = [instruction + t for t in items]
 
     model = _get_local_model(model_name)
-    vectors = model.encode(
-        items, batch_size=batch_size, normalize_embeddings=normalize, show_progress_bar=False
-    )
-    out = [list(map(float, v)) for v in vectors]
-    return out[0] if single else out
+    vectors = model.encode(items, normalize_embeddings=True, show_progress_bar=False)
+    return [list(map(float, v)) for v in vectors]
 
 
 def _get_local_model(model_name: str):

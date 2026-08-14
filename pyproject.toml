@@ -38,34 +38,28 @@ dependencies = [
 # "tai-aitutor[gemini,...]" resolve against PyPI, so they break git/local installs
 # whenever the published index lags the code. Never reintroduce them.
 # cohere and sentence-transformers are LESSON-SPECIFIC heavies: nothing imports them
-# unless embed_cohere/rerank or embed_local/finetune is actually called, so notebooks
-# may also just `pip install cohere` / `pip install sentence-transformers` directly.
+# unless embed_cohere/rerank or embed_local is actually called, so notebooks may also
+# just `pip install cohere` / `pip install sentence-transformers` directly.
 [project.optional-dependencies]
 gemini = ["google-genai>=1.35"]
 openai = ["openai>=2,<3"]
-anthropic = ["anthropic>=0.40"]
-providers = ["google-genai>=1.35", "openai>=2,<3", "anthropic>=0.40"]
+# >=0.77 is the floor for client.messages.parse(..., output_format=Schema)
+# -> response.parsed_output, which extract() uses. Verified by installing 0.76.0
+# (absent) and 0.77.0 (present) and introspecting the signature, 2026-08-13.
+anthropic = ["anthropic>=0.77"]
+providers = ["google-genai>=1.35", "openai>=2,<3", "anthropic>=0.77"]
 rag = ["chromadb>=1.0.21"]
 rerank = ["cohere>=5.13"]
 local = ["sentence-transformers>=3.0"]
-finetune = ["sentence-transformers>=3.0", "datasets>=2.19", "accelerate>=0.30"]
-parse = ["pypdf>=4.2"]
-web = ["tavily-python>=0.5", "wikipedia>=1.4"]
-data = ["huggingface-hub>=0.23", "pandas>=2.0"]
+web = ["tavily-python>=0.5"]
 all = [
     "google-genai>=1.35",
     "openai>=2,<3",
-    "anthropic>=0.40",
+    "anthropic>=0.77",
     "chromadb>=1.0.21",
     "cohere>=5.13",
     "sentence-transformers>=3.0",
-    "datasets>=2.19",
-    "accelerate>=0.30",
-    "pypdf>=4.2",
     "tavily-python>=0.5",
-    "wikipedia>=1.4",
-    "huggingface-hub>=0.23",
-    "pandas>=2.0",
 ]
 
 [project.urls]

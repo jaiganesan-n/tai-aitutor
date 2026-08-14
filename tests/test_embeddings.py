@@ -47,9 +47,10 @@ def fake_openai(monkeypatch):
     return client
 
 
-def test_single_string_returns_single_vector(fake_gemini):
-    vec = tai.embed("hello", task="query")
-    assert isinstance(vec[0], float)
+def test_single_string_still_returns_a_list_of_vectors(fake_gemini):
+    vectors = tai.embed("hello", task="query")
+    assert isinstance(vectors, list) and isinstance(vectors[0], list)
+    assert isinstance(vectors[0][0], float)
     call = fake_gemini.models.calls[0]
     assert call["config"].task_type == "RETRIEVAL_QUERY"
 
@@ -60,10 +61,21 @@ def test_list_returns_list_of_vectors(fake_gemini):
     assert fake_gemini.models.calls[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
 
 
-def test_gemini_batching_respects_api_cap(fake_gemini):
-    tai.embed([f"text {i}" for i in range(250)], batch_size=100)
+def test_caller_does_the_batching(fake_gemini):
+    """embed() sends what it is given in one call — the caller loops."""
+    tai.embed([f"text {i}" for i in range(250)])
     sizes = [len(c["contents"]) for c in fake_gemini.models.calls]
-    assert sizes == [100, 100, 50]
+    assert sizes == [250]
+
+
+def test_gemini_pins_1536_dimensions(fake_gemini):
+    tai.embed(["a", "b"])
+    assert fake_gemini.models.calls[0]["config"].output_dimensionality == tai.EMBED_DIM
+
+
+def test_newline_scrub(fake_gemini):
+    tai.embed(["one\ntwo"])
+    assert fake_gemini.models.calls[0]["contents"] == ["one two"]
 
 
 def test_openai_branch_resorts_by_index(fake_openai):

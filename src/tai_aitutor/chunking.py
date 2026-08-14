@@ -71,6 +71,19 @@ def chunk(
     Replaces ``TokenTextSplitter(separator=" ", chunk_size=512, chunk_overlap=128)``.
     Offline fallback (no tokenizer vocabulary): approximate windows of
     ``chunk_size * 4`` characters split on ``separator``.
+
+    Args:
+        text: The text to split.
+        chunk_size: Target window size, in tokens.
+        chunk_overlap: Tokens repeated between neighbouring windows.
+        separator: Word separator used only by the offline fallback.
+
+    Returns:
+        The chunk texts, in order. An empty or whitespace-only input gives ``[]``.
+
+    Raises:
+        ValueError: ``chunk_size`` is not positive, or the overlap is not
+            smaller than the chunk size.
     """
     _check_sizes(chunk_size, chunk_overlap)
     if not text or not text.strip():
@@ -123,6 +136,16 @@ def chunk_document(
 
     ``chunker`` overrides the splitter (any ``text -> list[str]`` callable, e.g.
     ``heading_aware_markdown_chunks``); default is :func:`chunk` with the sizes given.
+
+    Args:
+        doc: A :class:`Document`, or a bare string.
+        chunk_size: Target window size, in tokens.
+        chunk_overlap: Tokens repeated between neighbouring windows.
+        chunker: Optional ``(text) -> list[str]`` replacing the default splitter.
+
+    Returns:
+        :class:`Chunk` objects carrying the document's metadata and zero-padded
+        ids of the form ``"{doc_id}-0000"``, so ordering is stable.
     """
     if isinstance(doc, str):
         doc = Document(text=doc)
@@ -150,6 +173,14 @@ def chunk_sentences(text: str, chunk_size: int = 512, chunk_overlap: int = 128) 
 
     Sentences are never cut mid-way; overlap carries trailing sentences of the
     previous chunk (up to ``chunk_overlap`` tokens) into the next one.
+
+    Args:
+        text: The text to split.
+        chunk_size: Target window size, in tokens.
+        chunk_overlap: Tokens repeated between neighbouring windows.
+
+    Returns:
+        The chunk texts, split on sentence boundaries where possible.
     """
     _check_sizes(chunk_size, chunk_overlap)
     chunks: list[str] = []
@@ -258,6 +289,15 @@ def heading_aware_markdown_chunks(
     3. ``chunk_overlap`` tokens of trailing prose (never code) carry over into
        the next chunk for continuity.
     4. Oversized prose paragraphs fall back to plain token windows.
+
+    Args:
+        markdown: A Markdown document.
+        chunk_size: Target chunk size, in tokens.
+        chunk_overlap: Tokens repeated between neighbouring chunks.
+
+    Returns:
+        The chunk texts. A fenced code block is never split, so a chunk
+        containing one may exceed ``chunk_size``.
     """
     _check_sizes(chunk_size, chunk_overlap)
     blocks = _markdown_blocks(markdown)
@@ -340,6 +380,16 @@ def sentence_window_chunks(
     Replaces ``SentenceWindowNodeParser`` + sets up
     ``retrieval.expand_window`` (which replaces ``MetadataReplacementPostProcessor``):
     embed the small sentence, answer with the big window.
+
+    Args:
+        text: The text to split into sentences.
+        window_size: Neighbouring sentences kept on each side.
+        doc_id: Prefix for the generated chunk ids.
+
+    Returns:
+        One :class:`Chunk` per sentence. ``chunk.text`` is the sentence (what
+        gets embedded); ``chunk.metadata["window"]`` is the surrounding text
+        (what :func:`expand_window` swaps in at answer time).
     """
     sentences = _sentences(text)
     base = doc_id or hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:12]

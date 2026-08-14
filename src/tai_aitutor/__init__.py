@@ -2,23 +2,47 @@
 
 Plain-Python building blocks for the RAG AI Tutor built across the
 Full Stack AI Engineer course: provider-neutral LLM calls, embeddings,
-chunking, retrieval, and evaluation — every function is code a course
-lesson builds inline first, then imports from here.
+chunking, retrieval, and evaluation.
 
-Not a framework: no hidden magic, no global objects beyond one `configure()`
-call, and source you can read in one sitting.
+Migrating from LlamaIndex
+-------------------------
+The course used to do four things through LlamaIndex: configure models on
+``Settings``, build an ``Index``, query it through a ``QueryEngine``, and grade
+the result with ``Evaluator`` classes. Those four jobs are still here, as
+functions you can open: ``configure()``, a Chroma collection you hold yourself,
+``search()`` + ``build_rag_prompt()`` + ``generate()``, and the metric and judge
+functions in ``evals``. The mapping is symbol-for-symbol and written out in the
+README's migration map, so the model you already have of a RAG pipeline
+transfers intact — what changes is that every stage is now a call you can read
+the source of, and the stages you used to get bundled are yours to arrange.
+
+How it maps onto Sections 1-8
+-----------------------------
+Every function here is code you wrote by hand in a lesson first: ``chunk``,
+``embed``, ``search``, ``build_rag_prompt``, ``hit_rate``, the judges. Same
+names, same signatures, same returns. That is why the package starts at Section
+9 — by then you have built each stage yourself, so importing it back is
+consolidation, and later lessons can spend their cells on the new idea instead
+of re-pasted plumbing. Each module docstring names the lesson that builds its
+contents.
 
 Quickstart::
 
-    from tai_aitutor import configure, get_collection, ingest, answer
+    from tai_aitutor import configure, get_collection, chunk_document, embed, search
 
-    configure(provider="gemini")                    # or "openai" / "anthropic" / ...
-    col = get_collection("kb", path="./db")         # the collection IS the index
-    ingest(docs, col)                               # chunk → embed → upsert
-    print(answer("What is RAG?", col))              # retrieve → prompt → generate
+    configure(provider="gemini")                     # or "openai" / "anthropic"
+    col = get_collection("kb", path="./db")          # the collection IS the index
+
+    chunks = [c for d in docs for c in chunk_document(d)]
+    col.add(                                         # chunk -> embed -> upsert,
+        ids=[c.id for c in chunks],                  # the same three visible steps
+        documents=[c.text for c in chunks],          # the indexing lesson writes out
+        embeddings=embed([c.text for c in chunks]),
+        metadatas=[c.metadata for c in chunks],
+    )
+    hits = search("What is RAG?", col, top_k=5)       # dense retrieval, with scores
 """
 
-from .chat import Chat, ChatEvent, ToolLoop
 from .chunking import (
     Chunk,
     chunk,
@@ -36,16 +60,8 @@ from .config import (
     setup_notebook,
 )
 from .display import show_answer, show_chunks, show_eval_table
-from .documents import (
-    Document,
-    load_csv,
-    load_directory,
-    load_files,
-    load_hf_dataset,
-    load_jsonl,
-    load_wikipedia,
-)
-from .embeddings import embed, embed_cohere, embed_local
+from .documents import Document, load_csv
+from .embeddings import EMBED_DIM, embed, embed_cohere, embed_local
 from .errors import (
     EmbeddingsNotAvailableError,
     MissingKeyError,
@@ -57,114 +73,61 @@ from .errors import (
 from .evals import (
     CorrectnessVerdict,
     FaithfulnessVerdict,
-    JudgeReport,
     QADataset,
     QueryResult,
     RelevancyVerdict,
     RetrievalReport,
-    context_tokens,
     evaluate_retrieval,
     hit_rate,
     judge_correctness,
     judge_faithfulness,
     judge_relevancy,
-    make_qa_pairs,
-    mrr,
-    run_judges,
+    reciprocal_rank,
     sweep_top_k,
 )
-from .extractors import (
-    SituatedContext,
-    extract_keywords,
-    extract_questions,
-    extract_summary,
-    situate_chunk,
-    situate_chunks,
-)
-from .finetune import evaluate_embedder, make_training_pairs, train_embedder
-from .llm import (
-    Completion,
-    ToolCall,
-    Usage,
-    ask_batch,
-    chat_completion,
-    extract,
-    generate,
-    generate_stream,
-    generate_vision,
-)
+from .llm import extract, generate
 from .retrieval import (
     BM25Index,
     ScoredChunk,
     code_tokenize,
     decompose_question,
     expand_window,
-    hybrid_search,
     hyde_search,
     judge_rerank,
-    multi_step_answer,
-    pack_context,
     rerank,
+    rewrite_query,
     rrf_fuse,
     search,
-    subquestion_answer,
 )
 from .router import RouteDecision, route
-from .synthesis import (
-    Answer,
-    AnswerStream,
-    answer,
-    answer_stream,
-    answer_with_sources,
-    build_rag_prompt,
-)
-from .tokens import estimate_cost, n_tokens, truncate
-from .tools import Tool, make_retrieval_tool, render_tool_result, search_web, tool
-from .vectorstore import (
-    IngestStats,
-    build_where_filter,
-    get_all_chunks,
-    get_collection,
-    ingest,
-    reset_collection,
-)
+from .synthesis import build_rag_prompt
+from .tokens import n_tokens
+from .tools import Tool, search_web, tool
+from .vectorstore import build_where_filter, get_all_chunks, get_collection, reset_collection
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 __all__ = [
-    # config
+    # config — which provider and model the package calls
     "configure",
     "get_config",
     "setup_notebook",
     "require_keys",
     "in_colab",
     "Config",
-    # llm
+    # llm — text in, text or a typed object out
     "generate",
-    "generate_stream",
-    "generate_vision",
     "extract",
-    "ask_batch",
-    "chat_completion",
-    "Completion",
-    "ToolCall",
-    "Usage",
     # embeddings
     "embed",
     "embed_cohere",
     "embed_local",
+    "EMBED_DIM",
     # tokens
     "n_tokens",
-    "truncate",
-    "estimate_cost",
     # documents
     "Document",
     "load_csv",
-    "load_jsonl",
-    "load_directory",
-    "load_files",
-    "load_wikipedia",
-    "load_hf_dataset",
     # chunking
     "Chunk",
     "chunk",
@@ -172,11 +135,9 @@ __all__ = [
     "chunk_sentences",
     "heading_aware_markdown_chunks",
     "sentence_window_chunks",
-    # vectorstore
+    # vectorstore — the Chroma collection IS the index
     "get_collection",
     "reset_collection",
-    "ingest",
-    "IngestStats",
     "get_all_chunks",
     "build_where_filter",
     # retrieval
@@ -186,29 +147,19 @@ __all__ = [
     "code_tokenize",
     "BM25Index",
     "rrf_fuse",
-    "hybrid_search",
     "rerank",
     "judge_rerank",
+    "rewrite_query",
     "hyde_search",
     "decompose_question",
-    "subquestion_answer",
-    "multi_step_answer",
-    "pack_context",
-    # synthesis
-    "answer",
-    "answer_with_sources",
-    "answer_stream",
-    "AnswerStream",
-    "Answer",
+    # synthesis — the prompt, visible
     "build_rag_prompt",
     # evals
     "QADataset",
-    "make_qa_pairs",
     "hit_rate",
-    "mrr",
+    "reciprocal_rank",
     "evaluate_retrieval",
     "sweep_top_k",
-    "context_tokens",
     "RetrievalReport",
     "QueryResult",
     "FaithfulnessVerdict",
@@ -217,37 +168,18 @@ __all__ = [
     "judge_faithfulness",
     "judge_relevancy",
     "judge_correctness",
-    "run_judges",
-    "JudgeReport",
-    # extractors
-    "extract_keywords",
-    "extract_summary",
-    "extract_questions",
-    "situate_chunk",
-    "situate_chunks",
-    "SituatedContext",
     # tools
     "Tool",
     "tool",
-    "make_retrieval_tool",
     "search_web",
-    "render_tool_result",
-    # chat
-    "Chat",
-    "ToolLoop",
-    "ChatEvent",
     # router
     "route",
     "RouteDecision",
-    # finetune
-    "make_training_pairs",
-    "train_embedder",
-    "evaluate_embedder",
     # display
     "show_chunks",
     "show_answer",
     "show_eval_table",
-    # errors
+    # errors — all subclass ValueError
     "TaiAitutorError",
     "UnsupportedProviderError",
     "ProviderNotInstalledError",
